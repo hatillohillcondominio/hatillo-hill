@@ -355,6 +355,7 @@ let whatsappTemplateGeneral = 'Hola {nombre}, le saluda la Junta de Condominio d
 let whatsappTemplateCobro = 'Hola {nombre}, le recordamos que el apartamento {id} en Hatillo Hill presenta una deuda de ${monto} correspondiente a {meses} mes(es) ({dias} días aprox.). Agradecemos su pago a la brevedad. -- Junta de Condominio';
 let recordatorioFrecuenciaDias = 15;
 let preferWhatsappEscritorio = false;
+let formasPago = formasPagoPorDefecto();
 
 function titleCaseName(s){
   return String(s||'').trim().split(/\s+/).map(function(w){ return w ? w.charAt(0).toUpperCase()+w.slice(1).toLowerCase() : w; }).join(' ');
@@ -571,7 +572,7 @@ async function driveSyncPull(){
     writeLocalBackupNow({
       apartments, parking, maleteros, deudaRows, deudaHistorial, proyectos, multas,
       whatsappTemplateGeneral, whatsappTemplateCobro, whatsappTemplateMulta,
-      recordatorioFrecuenciaDias, preferWhatsappEscritorio
+      recordatorioFrecuenciaDias, preferWhatsappEscritorio, formasPago
     });
   }catch(e){
     console.error(e);
@@ -751,6 +752,7 @@ async function importLocalBackup(){
     if(snap.whatsappTemplateMulta) whatsappTemplateMulta = snap.whatsappTemplateMulta;
     if(snap.recordatorioFrecuenciaDias) recordatorioFrecuenciaDias = snap.recordatorioFrecuenciaDias;
     if(snap.preferWhatsappEscritorio!=null) preferWhatsappEscritorio = snap.preferWhatsappEscritorio;
+    if(snap.formasPago) formasPago = normalizarFormasPago(snap.formasPago);
     await saveFullSnapshot();
     rebuildScene();
     renderTopbar();
@@ -773,7 +775,7 @@ async function saveFullSnapshot(){
   const snap = {
     apartments, parking, maleteros, deudaRows, deudaHistorial, proyectos, multas,
     whatsappTemplateGeneral, whatsappTemplateCobro, whatsappTemplateMulta,
-    recordatorioFrecuenciaDias, preferWhatsappEscritorio
+    recordatorioFrecuenciaDias, preferWhatsappEscritorio, formasPago
   };
   try{ await window.storage.set(FULL_SNAPSHOT_KEY, JSON.stringify(snap)); }catch(e){ console.error(e); }
   writeLocalBackupNow(snap);
@@ -796,6 +798,7 @@ async function loadOverrides(){
       if(p.whatsappTemplateMulta) whatsappTemplateMulta = p.whatsappTemplateMulta;
       if(p.recordatorioFrecuenciaDias) recordatorioFrecuenciaDias = p.recordatorioFrecuenciaDias;
       if(p.preferWhatsappEscritorio!=null) preferWhatsappEscritorio = p.preferWhatsappEscritorio;
+      if(p.formasPago) formasPago = normalizarFormasPago(p.formasPago);
       return;
     }
   }catch(e){}
@@ -834,6 +837,10 @@ async function loadOverrides(){
   try{
     const r = await window.storage.get('prefer_whatsapp_escritorio');
     if(r && r.value) preferWhatsappEscritorio = r.value==='1';
+  }catch(e){}
+  try{
+    const r = await window.storage.get('formas_pago_proyectos');
+    if(r && r.value) formasPago = normalizarFormasPago(JSON.parse(r.value));
   }catch(e){}
   try{
     const list = await window.storage.list('apt_override:');
@@ -921,6 +928,11 @@ async function saveWhatsappTemplateCobro(t){
 async function saveRecordatorioFrecuencia(dias){
   recordatorioFrecuenciaDias = dias;
   try{ await window.storage.set('recordatorio_frecuencia_dias', String(dias)); }catch(e){ console.error(e); }
+  saveFullSnapshot();
+}
+async function saveFormasPago(lista){
+  formasPago = normalizarFormasPago(lista);
+  try{ await window.storage.set('formas_pago_proyectos', JSON.stringify(formasPago)); }catch(e){ console.error(e); }
   saveFullSnapshot();
 }
 async function savePreferWhatsappEscritorio(v){
@@ -2195,6 +2207,52 @@ function renderConfigTab(body){
     </div>
   `;
   body.appendChild(proyDetails);
+
+  const fpDetails = document.createElement('details');
+  fpDetails.style.marginBottom = '12px';
+  fpDetails.innerHTML = `
+    <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--sub);padding:4px 0;">💳 Medios de pago de los proyectos</summary>
+    <div style="margin-top:10px;">
+      <div class="assumption">Hasta ${casillasFormaPago()} medios. Marca los que se usan y ponles nombre (ej: USDT, Transferencia en Bs, Transferencia en dólares, Dólares en efectivo). Solo los marcados aparecen al registrar un abono. Si cambias el nombre de uno, los abonos que ya lo usaban se renombran también.</div>
+      ${formasPago.map((f,i)=>`
+        <div class="form-row" style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" data-fp-activo="${i}" ${f.activo?'checked':''} style="flex:0 0 auto;width:auto;">
+          <input type="text" data-fp-titulo="${i}" value="${escHtml(f.titulo)}" placeholder="Medio de pago ${i+1}" maxlength="40" style="flex:1;text-align:left;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;">
+        </div>`).join('')}
+      <div class="savebar"><button class="btn primary" id="btnGuardarFormasPago" style="flex:1;">Guardar medios de pago</button></div>
+      <div class="savedFlag" id="flagFormasPago"></div>
+    </div>
+  `;
+  body.appendChild(fpDetails);
+  document.getElementById('btnGuardarFormasPago').onclick = async ()=>{
+    const flag = document.getElementById('flagFormasPago');
+    const nueva = formasPago.map((f,i)=>({
+      titulo: fpDetails.querySelector('[data-fp-titulo="'+i+'"]').value.trim(),
+      activo: fpDetails.querySelector('[data-fp-activo="'+i+'"]').checked
+    }));
+    if(nueva.some(f=>f.activo && !f.titulo)){ flag.textContent = 'Ponle nombre a cada medio marcado.'; return; }
+    if(!nueva.some(f=>f.activo && f.titulo)){ flag.textContent = 'Deja al menos un medio de pago marcado.'; return; }
+    const claves = nueva.filter(f=>f.titulo).map(f=>claveFormaPago(f.titulo));
+    if(new Set(claves).size !== claves.length){ flag.textContent = 'Hay dos medios con el mismo nombre.'; return; }
+    // renombres: misma casilla, titulo distinto, y el viejo tenia abonos
+    const renombres = [];
+    formasPago.forEach((f,i)=>{
+      if(f.titulo && nueva[i].titulo && claveFormaPago(f.titulo)!==claveFormaPago(nueva[i].titulo)){
+        const n = contarAbonosConForma(f.titulo);
+        if(n) renombres.push({viejo:f.titulo, nuevo:nueva[i].titulo, n});
+      }
+    });
+    if(renombres.length){
+      const txt = renombres.map(r=>'"'+r.viejo+'" → "'+r.nuevo+'" ('+r.n+' abono'+(r.n===1?'':'s')+')').join('\n');
+      if(!confirm('Se renombrarán los abonos que ya usaban estos medios:\n\n'+txt+'\n\n¿Continuar?')) return;
+      renombres.forEach(r=>renombrarFormaPagoEnAbonos(r.viejo, r.nuevo));
+    }
+    flag.textContent = 'Guardando...';
+    await saveFormasPago(nueva);
+    if(renombres.length) await saveProyectos();
+    flag.textContent = '✓ Medios de pago guardados';
+    setTimeout(()=>{ if(flag) flag.textContent=''; }, 2500);
+  };
   document.getElementById('btnNuevoProyecto').onclick = async ()=>{
     const nombre = document.getElementById('np_nombre').value.trim();
     const presupuesto = parseFloat(document.getElementById('np_presupuesto').value) || 0;
@@ -2553,6 +2611,98 @@ function renderDeudaTab(body){
   };
 }
 
+// ---------- medios de pago de los proyectos ----------
+// Cinco casillas fijas que la junta habilita y titula. Cada abono guarda el titulo como
+// texto (forma_pago), por eso renombrar una casilla renombra tambien los abonos que ya
+// la usaban; los totales agrupan sin distinguir mayusculas ni acentos (EFECTIVO = Efectivo).
+// funcion y no const: formasPago se inicializa arriba en el archivo, antes de este bloque
+function casillasFormaPago(){ return 5; }
+function formasPagoPorDefecto(){
+  const base = [{titulo:'Efectivo', activo:true}, {titulo:'Transferencia', activo:true}];
+  while(base.length < casillasFormaPago()) base.push({titulo:'', activo:false});
+  return base;
+}
+function normalizarFormasPago(lista){
+  const out = [];
+  for(let i=0; i<casillasFormaPago(); i++){
+    const f = (Array.isArray(lista) && lista[i]) || {};
+    out.push({titulo: String(f.titulo||'').trim(), activo: !!f.activo});
+  }
+  return out;
+}
+function claveFormaPago(t){
+  return String(t||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');
+}
+function escHtml(s){
+  return String(s===null||s===undefined ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function formasPagoActivas(){
+  return formasPago.filter(f=>f.activo && f.titulo);
+}
+// <option>s de las casillas activas; si el abono que se edita usa un medio que ya no esta
+// activo, se agrega igual para no perderlo al guardar.
+function opcionesFormaPago(actual){
+  const lista = formasPagoActivas().map(f=>f.titulo);
+  const k = claveFormaPago(actual);
+  if(actual && !lista.some(t=>claveFormaPago(t)===k)) lista.push(actual);
+  return lista.map(t=>'<option value="'+escHtml(t)+'"'+(k && claveFormaPago(t)===k ? ' selected' : '')+'>'+escHtml(t)+'</option>').join('');
+}
+// Recaudado de un proyecto agrupado por medio de pago. Si algun apartamento tiene pagado
+// mas de lo que suma su historial (cargas en lote viejas), la diferencia va a "Sin detalle"
+// para que los medios siempre sumen el total general.
+function totalesPorFormaPago(p){
+  const grupos = new Map();
+  formasPago.forEach(f=>{ if(f.titulo) grupos.set(claveFormaPago(f.titulo), {titulo:f.titulo, monto:0, n:0}); });
+  let sinDetalle = 0;
+  (p.aportes||[]).forEach(ap=>{
+    let sumaHist = 0;
+    (ap.historial||[]).forEach(h=>{
+      const monto = Number(h.monto)||0;
+      if(monto<=0) return;
+      sumaHist += monto;
+      const k = claveFormaPago(h.forma_pago) || '__sin_forma';
+      if(!grupos.has(k)) grupos.set(k, {titulo: h.forma_pago ? String(h.forma_pago).trim() : 'Sin especificar', monto:0, n:0});
+      const g = grupos.get(k); g.monto += monto; g.n++;
+    });
+    const dif = (ap.monto_pagado||0) - sumaHist;
+    if(dif > 0.005) sinDetalle += dif;
+  });
+  const filas = [...grupos.values()].filter(g=>g.n>0);
+  if(sinDetalle > 0.005) filas.push({titulo:'Sin detalle', monto:sinDetalle, n:0});
+  const total = filas.reduce((s,g)=>s+g.monto, 0);
+  return {filas, total};
+}
+function htmlTotalesFormaPago(p){
+  const {filas, total} = totalesPorFormaPago(p);
+  if(!filas.length) return '<div class="empty" style="padding:6px 0;">Sin abonos registrados todavía.</div>';
+  // useGrouping 'always': en español el navegador no separa los miles de un numero de 4 cifras
+  const fmt = v=>'$'+v.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2, useGrouping:'always'});
+  return filas.map(g=>{
+    const pct = total ? Math.round(g.monto/total*100) : 0;
+    return '<div class="statline"><span>'+escHtml(g.titulo)+(g.n ? ' <span style="color:var(--dim);font-size:11px;">('+g.n+' abono'+(g.n===1?'':'s')+')</span>' : '')+'</span>'
+      +'<b>'+fmt(g.monto)+' <span style="color:var(--dim);font-weight:400;font-size:11px;">'+pct+'%</span></b></div>';
+  }).join('')
+  + '<div class="statline" style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;"><span><b>Total general</b></span><b style="color:#4f8f6a">'+fmt(total)+'</b></div>';
+}
+// renombra en todos los proyectos los abonos que usaban un titulo viejo; devuelve cuantos
+function renombrarFormaPagoEnAbonos(viejo, nuevo){
+  const k = claveFormaPago(viejo);
+  let n = 0;
+  proyectos.forEach(p=>(p.aportes||[]).forEach(ap=>(ap.historial||[]).forEach(h=>{
+    if(claveFormaPago(h.forma_pago)===k){ h.forma_pago = nuevo; n++; }
+  })));
+  return n;
+}
+function contarAbonosConForma(titulo){
+  const k = claveFormaPago(titulo);
+  let n = 0;
+  proyectos.forEach(p=>(p.aportes||[]).forEach(ap=>(ap.historial||[]).forEach(h=>{
+    if(claveFormaPago(h.forma_pago)===k) n++;
+  })));
+  return n;
+}
+
 // ---------- proyectos especiales ----------
 function proyectoRepartoAporte(proyecto, apt){
   if(proyecto.reparto==='igual'){
@@ -2634,8 +2784,7 @@ function renderProyectoDetalle(body, p){
             return '<div class="comp-item" style="padding-left:14px;flex-wrap:wrap;gap:6px;">'
               +'<input type="number" step="0.01" value="'+(h.monto||0)+'" data-edit-monto style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
               +'<select data-edit-forma style="padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
-              +'<option value="Transferencia"'+(h.forma_pago==='Transferencia'?' selected':'')+'>Transferencia</option>'
-              +'<option value="Efectivo"'+(h.forma_pago==='Efectivo'?' selected':'')+'>Efectivo</option>'
+              +opcionesFormaPago(h.forma_pago)
               +'</select>'
               +'<button class="btn primary" data-save-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Guardar</button>'
               +'<button class="btn ghost" data-cancel-hist style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Cancelar</button>'
@@ -2650,8 +2799,7 @@ function renderProyectoDetalle(body, p){
             return '<div class="comp-item" style="padding-left:14px;flex-wrap:wrap;gap:6px;">'
               +'<input type="number" step="0.01" value="'+(ap.monto_pagado||0)+'" data-edit-monto style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
               +'<select data-edit-forma style="padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
-              +'<option value="Transferencia">Transferencia</option>'
-              +'<option value="Efectivo">Efectivo</option>'
+              +opcionesFormaPago('')
               +'</select>'
               +'<button class="btn primary" data-save-hist data-apt="'+esc(ap.apt_id)+'" data-idx="-1" style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Guardar</button>'
               +'<button class="btn ghost" data-cancel-hist style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Cancelar</button>'
@@ -2691,6 +2839,8 @@ function renderProyectoDetalle(body, p){
     <div class="assumption">${esc(p.descripcion||'')}</div>
     <div class="statline"><span>Presupuesto</span><b>$${(p.presupuesto_total||0).toLocaleString()}</b></div>
     <div class="statline"><span>Recaudado</span><b id="proyRecaudado" style="color:#4f8f6a">$${recaudado.toLocaleString(undefined,{maximumFractionDigits:2})} (${pct}%)</b></div>
+    <h3 class="section" style="margin-top:14px;">Recaudado por medio de pago</h3>
+    <div id="proyPorForma">${htmlTotalesFormaPago(p)}</div>
     <h3 class="section" style="margin-top:14px;">Aportes por apartamento (${(p.aportes||[]).length})</h3>
     <input type="text" id="ap_buscar_apto" class="searchbox" placeholder="Buscar apartamento o propietario...">
     <div class="savebar" style="margin:-4px 0 10px;"><button class="btn ghost" id="btnVerTodosPagos" style="flex:1;">👁️ Ver todos los pagos</button></div>
@@ -2700,10 +2850,7 @@ function renderProyectoDetalle(body, p){
     <div class="form-row two">
       <div><label>Monto abonado (USD)</label><input id="ab_monto" type="number" step="0.01"></div>
       <div><label>Forma de pago</label>
-        <select id="ab_forma">
-          <option value="Transferencia">Transferencia</option>
-          <option value="Efectivo">Efectivo</option>
-        </select>
+        <select id="ab_forma">${opcionesFormaPago('')}</select>
       </div>
     </div>
     <div class="savebar"><button class="btn primary" id="btnAbonar" style="flex:1;">Registrar y avisar por WhatsApp</button></div>
@@ -2735,6 +2882,8 @@ function renderProyectoDetalle(body, p){
     const nuevoPct = p.presupuesto_total ? Math.min(100, Math.round(nuevoRecaudado/p.presupuesto_total*100)) : 0;
     const el = document.getElementById('proyRecaudado');
     if(el) el.textContent = '$'+nuevoRecaudado.toLocaleString(undefined,{maximumFractionDigits:2})+' ('+nuevoPct+'%)';
+    const porForma = document.getElementById('proyPorForma');
+    if(porForma) porForma.innerHTML = htmlTotalesFormaPago(p);
   }
   document.getElementById('aportesListHost').addEventListener('click', async (e)=>{
     const editBtn = e.target.closest('[data-edit-hist]');
