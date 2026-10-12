@@ -34,6 +34,11 @@
   .saldo .monto{font-size:38px;font-weight:800;margin:4px 0 2px;font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
   .saldo .det{font-size:13px;color:var(--sub);margin-bottom:16px;}
   .saldo.aldia .monto{color:var(--green);}
+  .aviso{border-color:var(--red);background:#fbefec;}
+  .aviso .avTit{font-weight:800;color:var(--red);font-size:14px;margin-bottom:4px;}
+  .aviso .avTxt{font-size:14px;line-height:1.45;margin-bottom:6px;}
+  .aviso .avMonto{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;margin-bottom:6px;}
+  .aviso .avMonto span{font-size:14px;color:var(--sub);font-weight:600;}
   .saldo .enbs{font-size:17px;font-weight:700;color:var(--sub);font-variant-numeric:tabular-nums;margin-bottom:4px;}
   .saldo.debe .monto{color:var(--red);}
 
@@ -279,15 +284,16 @@ let datos = {};
 async function cargar(){
   const id = perfil.apartamento_id;
   const pTasa = cargarTasa();
-  const [a, s, r, p, m, c, ap, cfg] = await Promise.all([
+  const [a, s, r, p, m, c, ap, cfg, fav] = await Promise.all([
     db.from('apartamentos').select('id, propietario, torre, piso').eq('id', id).maybeSingle(),
     db.from('v_saldo_apartamento').select('saldo, recibos_pendientes, recibo_mas_viejo').eq('apartamento_id', id).maybeSingle(),
     db.from('recibos').select('id, periodo_id, monto_total, vence_el').eq('apartamento_id', id).order('periodo_id', {ascending:false}),
     db.from('pagos').select('id, fecha, monto, forma_pago, banco, referencia, origen, estado, nota, creado_en').eq('apartamento_id', id).order('fecha', {ascending:false}).order('creado_en', {ascending:false}).limit(60),
-    db.from('multas').select('id, fecha, descripcion, monto, estado, recibo_id').eq('apartamento_id', id).order('fecha', {ascending:false}),
+    db.from('multas').select('id, fecha, articulos_label, descripcion, monto, estado, recibo_id').eq('apartamento_id', id).order('fecha', {ascending:false}),
     db.from('cargos').select('id, fecha, concepto, monto, recibo_id, anulado').eq('apartamento_id', id).is('recibo_id', null).eq('anulado', false),
     db.from('proyecto_aportes').select('id, monto_aporte, proyectos(nombre, activo), proyecto_abonos(fecha, monto, forma_pago)').eq('apartamento_id', id),
-    db.from('configuracion').select('valor').eq('clave', 'datos_pago_portal').maybeSingle()
+    db.from('configuracion').select('valor').eq('clave', 'datos_pago_portal').maybeSingle(),
+    db.from('v_saldo_favor').select('a_favor').eq('apartamento_id', id).maybeSingle()
   ]);
   const falla = [a, s, r, p].find(x=>x.error);
   if(falla) throw new Error(falla.error.message);
@@ -307,6 +313,7 @@ async function cargar(){
     multas: (m.data || []).filter(x=>x.estado !== 'anulada'),
     cargos: c.data || [],
     aportes: ap.data || [],
+    aFavor: fav && fav.data ? Number(fav.data.a_favor) : 0,
     datosPago: cfg.data ? (cfg.data.valor || '').trim() : ''
   };
 }
@@ -322,11 +329,18 @@ async function pintarInicio(){
   const debe = d.saldo > 0.005;
   const enRevision = d.pagos.filter(p=>p.estado === 'reportado');
   const sumaRevision = enRevision.reduce((s,p)=>s+Number(p.monto), 0);
+  const multasNuevas = d.multas.filter(m=>m.estado === 'pendiente' && !m.recibo_id);
 
   let h = '<div class="wrap">'
     + '<header><img src="' + LOGO + '" alt=""><div class="t"><b>Apartamento ' + esc(apt.id) + '</b><span>' + esc(apt.propietario || perfil.nombre || '') + '</span></div>'
     + '<button class="menuBtn" id="bMenu" aria-label="Opciones">☰</button></header>'
     + '<div class="menuPop" id="menuPop"><button id="mSalir">↩ Salir</button></div>'
+    + multasNuevas.map(m=>'<div class="card aviso">'
+        + '<div class="avTit">⚠️ Multa registrada · ' + fecha(m.fecha) + '</div>'
+        + '<div class="avTxt">' + (m.articulos_label ? '<b>' + esc(m.articulos_label) + '</b> — ' : '') + esc(m.descripcion) + '</div>'
+        + '<div class="avMonto">' + usd(m.monto) + (tasa ? ' <span>· ' + bs(enBs(m.monto)) + '</span>' : '') + '</div>'
+        + '<div class="nota">Se sumará a tu próximo recibo de condominio. Si prefieres pagarla antes, reporta el pago: quedará como abono y se descontará de ese recibo.</div>'
+        + '</div>').join('')
 
     + '<div class="card saldo ' + (debe ? 'debe' : 'aldia') + '">'
     + '<div class="lbl">' + (debe ? 'Saldo pendiente' : 'Estás al día') + '</div>'
@@ -336,6 +350,7 @@ async function pintarInicio(){
         ? d.pendientes + (d.pendientes === 1 ? ' recibo pendiente' : ' recibos pendientes')
         : 'No tienes recibos pendientes. ¡Gracias!')
     + (sumaRevision > 0 ? '<br><span class="esp">' + usd(sumaRevision) + ' en revisión por la tesorería</span>' : '')
+    + (d.aFavor > 0.005 ? '<br><span class="ok">' + usd(d.aFavor) + ' a tu favor (abono): se descontará de tu próximo recibo</span>' : '')
     + '</div>'
     + '<button class="btn" id="bReportar">Reportar un pago</button>'
     + '<div class="nota" style="margin-top:10px;">' + (tasa
@@ -374,7 +389,7 @@ async function pintarInicio(){
 
   // cargos y multas por cobrar
   const porCobrar = d.cargos.map(c=>({fecha:c.fecha, txt:c.concepto, monto:c.monto, tipo:'Cargo'}))
-    .concat(d.multas.filter(m=>m.estado === 'pendiente' && !m.recibo_id).map(m=>({fecha:m.fecha, txt:m.descripcion, monto:m.monto, tipo:'Multa'})));
+    .concat(multasNuevas.map(m=>({fecha:m.fecha, txt:(m.articulos_label ? m.articulos_label + ' — ' : '') + m.descripcion, monto:m.monto, tipo:'Multa'})));
   if(porCobrar.length){
     h += '<h2>Entran en tu próximo recibo</h2><div class="card lista">'
       + porCobrar.map(x=>'<div class="fila"><div class="q"><b>' + esc(x.txt) + '</b><span>' + x.tipo + ' · ' + fecha(x.fecha) + '</span></div>'
@@ -409,16 +424,19 @@ async function pintarInicio(){
 // ---------- reportar un pago ----------
 function formularioPago(){
   const d = datos;
+  const proximo = d.cargos.reduce((s,c)=>s+Number(c.monto), 0)
+    + d.multas.filter(m=>m.estado === 'pendiente' && !m.recibo_id).reduce((s,m)=>s+Number(m.monto), 0);
+  const sugerido = Math.round((Math.max(d.saldo, 0) + proximo - d.aFavor) * 100) / 100;
   abrirHoja('<div class="barra"><b>Reportar un pago</b><button class="cerrar" data-cerrar>✕</button></div>'
     + '<p class="nota" style="margin:0;">La tesorería lo verá en el banco y lo confirmará. Hasta entonces aparece como “En revisión”.</p>'
     + (d.datosPago ? '<details style="margin-top:10px;"><summary class="nota" style="cursor:pointer;">Ver datos para pagar</summary><div class="pago-datos" style="margin-top:6px;">' + esc(d.datosPago) + '</div></details>' : '')
     + '<form id="fPago">'
     + '<label for="pForma">Forma de pago</label><select id="pForma">' + FORMAS_PAGO.map(f=>'<option>' + f + '</option>').join('') + '</select>'
     + (tasa ? '<div id="pFilaBs"><label for="pBs">Monto pagado en bolívares</label><input id="pBs" type="number" inputmode="decimal" step="0.01" min="0.01"'
-        + (d.saldo > 0.005 ? ' value="' + enBs(d.saldo).toFixed(2) + '"' : '') + '>'
+        + (sugerido > 0.005 ? ' value="' + enBs(sugerido).toFixed(2) + '"' : '') + '>'
         + '<div class="nota" style="margin-top:4px;">A la tasa BCV de ' + f2(tasa.valor) + ' Bs por $.</div></div>' : '')
     + '<label for="pMonto">Equivale en dólares</label><input id="pMonto" type="number" inputmode="decimal" step="0.01" min="0.01" required'
-      + (d.saldo > 0.005 ? ' value="' + d.saldo.toFixed(2) + '"' : '') + '>'
+      + (sugerido > 0.005 ? ' value="' + sugerido.toFixed(2) + '"' : '') + '>'
     + '<label for="pFecha">Fecha del pago</label><input id="pFecha" type="date" max="' + hoy() + '" value="' + hoy() + '" required>'
     + '<label for="pBanco">Banco de origen</label><input id="pBanco" type="text" placeholder="Ej.: Banesco">'
     + '<label for="pRef">Número de referencia</label><input id="pRef" type="text" inputmode="numeric" placeholder="El que aparece en el comprobante">'

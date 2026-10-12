@@ -4788,7 +4788,9 @@ function multaEstadoBadge(m){
 }
 function buildMultaMsg(m){
   const apt = apartments.find(a=>a.id===m.apt_id);
-  return fillTemplate(whatsappTemplateMulta, {nombre: apt?apt.propietario:'', id: m.apt_id, articulo: m.articulos_label, falta: m.descripcion, monto: (m.monto||0).toFixed(2)});
+  return fillTemplate(whatsappTemplateMulta, {nombre: apt?apt.propietario:'', id: m.apt_id, articulo: m.articulos_label, falta: m.descripcion, monto: (m.monto||0).toFixed(2)})
+    + '\n\nLa multa se sumará a su próximo recibo de condominio. Si desea pagarla antes, repórtela en el portal y quedará como abono: '
+    + new URL('portal.html', location.href).href;
 }
 function multaCardHtml(m){
   const apt = apartments.find(a=>a.id===m.apt_id);
