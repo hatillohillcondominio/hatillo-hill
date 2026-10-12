@@ -1965,6 +1965,8 @@ function focusSotano(s){
 
 // ---------- sidebar rendering ----------
 function esc(s){ return (s===null||s===undefined) ? '' : String(s); }
+// escape de verdad para lo que escribe un vecino desde el portal (va a innerHTML)
+function escHtml(s){ return esc(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ---------- Banco: concilia, no registra ----------
 // Los ingresos ya estan en Pagos y los egresos en Gastos. Anotarlos otra vez
@@ -2144,7 +2146,7 @@ function renderBancoSeccion(body){
         return;
       }
       caja.innerHTML = sugs.map(sg=>
-        '<div class="comp-item"><span class="t">' + esc(sg.texto) + '</span>'
+        '<div class="comp-item"><span class="t">' + escHtml(sg.texto) + '</span>'
         + '<button class="chip" data-cuadra="'+sg.id+'" data-tipo="'+sg.tipo+'" data-mov="'+id+'" '
         + 'style="background:var(--green);color:#fff;flex:0 0 auto;">Es este</button></div>').join('');
       caja.querySelectorAll('[data-cuadra]').forEach(bt=>{
@@ -3051,7 +3053,7 @@ async function datosRecibo(reciboId){
   const rc = r.data;
   const [det, apl, gas, todos, deu] = await Promise.all([
     db.from('recibo_detalle').select('*').eq('recibo_id', rc.id),
-    db.from('aplicaciones_pago').select('monto').eq('recibo_id', rc.id),
+    db.from('aplicaciones_pago').select('monto, pagos(fecha, forma_pago, banco, referencia)').eq('recibo_id', rc.id),
     db.from('gastos').select('descripcion, monto, categorias_gasto(nombre)').eq('periodo_id', rc.periodo_id).eq('prorrateable', true).order('fecha'),
     db.from('recibos').select('monto_condominio').eq('periodo_id', rc.periodo_id),
     db.from('v_deuda').select('*').eq('id', rc.apartamento_id).maybeSingle()
@@ -3063,6 +3065,7 @@ async function datosRecibo(reciboId){
     rc, detalle: det.data || [], gastos, totalGastos, repartido,
     asiento: Math.round((repartido - totalGastos) * 100) / 100,
     pagado: (apl.data || []).reduce((s,x)=>s+Number(x.monto), 0),
+    pagos: apl.data || [],
     deudaTotal: deu.data ? Number(deu.data.monto) : 0,
     apt: apartments.find(x=>x.id===rc.apartamento_id) || {id: rc.apartamento_id}
   };
@@ -3084,7 +3087,7 @@ function htmlRecibo(d){
   return '<div class="rcCab"><div style="display:flex;align-items:flex-end;gap:14px;">'
     + '<img src="' + LOGO_RECIBO + '" alt="Hatillo Hill · Conjunto Residencial" style="height:78px;width:auto;">'
     + '<div style="font-size:11.5px;color:#555;padding-bottom:4px;">Junta de Condominio<br>Autoadministración</div></div>'
-    + '<div class="rcTipo">AVISO DE COBRO<div style="font-size:12px;font-weight:600;">N.º ' + esc(rc.periodo_id) + '-' + esc(rc.apartamento_id) + '</div>'
+    + '<div class="rcTipo">AVISO DE COBRO<div style="font-size:12px;font-weight:600;">N.º ' + esc(rc.periodo_id) + '-' + esc(rc.apartamento_id) + '</div>' + selloPagado(saldoRecibo)
     + '<div style="font-size:12px;font-weight:400;">Emitido ' + fecha(rc.emitido_en) + (rc.vence_el ? ' · vence ' + fecha(rc.vence_el + 'T12:00:00') : '') + '</div></div></div>'
     + '<div class="rcDatos"><div><b>Propietario:</b> ' + esc(d.apt.propietario || '') + '</div><div><b>Apto:</b> ' + esc(rc.apartamento_id) + '</div>'
     + '<div><b>Mes:</b> ' + mesLegible(rc.periodo_id) + '</div><div><b>Alícuota:</b> ' + (alic*100).toLocaleString('es-VE', {maximumFractionDigits:6}) + ' %</div></div>'
@@ -3098,8 +3101,31 @@ function htmlRecibo(d){
     + '<div><b>Pagos aplicados</b><span>' + f2(d.pagado) + '</span></div>'
     + '<div><b>Total adeudado hoy</b><span>' + f2(d.deudaTotal) + '</span></div></div>'
     + '<div style="margin-top:10px;font-size:11px;color:#555;">' + (saldoRecibo > 0.005 ? 'Este recibo tiene pendientes $' + f2(saldoRecibo) + '.' : 'Este recibo está pagado.')
-    + ' Montos en dólares; se pagan en bolívares a la tasa BCV del día del pago.</div>';
+    + ' Montos en dólares; se pagan en bolívares a la tasa BCV del día del pago.</div>'
+    + htmlPagosRecibo(d.pagos, saldoRecibo);
 }
+
+// constancia de pago: cada pago aplicado a este recibo, con su fecha, banco y referencia
+function htmlPagosRecibo(pagos, saldoRecibo){
+  if(!pagos || !pagos.length) return '';
+  const f2p = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fp = s=>s ? new Date(s + 'T12:00:00').toLocaleDateString('es-VE', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
+  const filas = pagos.slice().sort((a,b)=>String((a.pagos||{}).fecha).localeCompare(String((b.pagos||{}).fecha))).map(x=>{
+    const p = x.pagos || {};
+    return '<tr><td>' + fp(p.fecha) + '</td><td>' + escHtml(p.forma_pago || '') + '</td><td>' + escHtml(p.banco || '') + '</td>'
+      + '<td>' + escHtml(p.referencia || '') + '</td><td class="n">' + f2p(x.monto) + '</td></tr>';
+  }).join('');
+  return '<table style="margin-top:12px;"><thead><tr><th colspan="5">CONSTANCIA DE PAGO' + (saldoRecibo <= 0.005 ? ' — RECIBO PAGADO' : '') + '</th></tr>'
+    + '<tr><th>FECHA</th><th>FORMA</th><th>BANCO</th><th>REFERENCIA</th><th class="n">APLICADO $</th></tr></thead><tbody>' + filas
+    + '<tr class="tot"><td colspan="4">TOTAL PAGADO DE ESTE RECIBO</td><td class="n">' + f2p(pagos.reduce((s,x)=>s+Number(x.monto), 0)) + '</td></tr></tbody></table>';
+}
+
+function selloPagado(saldoRecibo){
+  return saldoRecibo <= 0.005
+    ? '<div style="display:inline-block;margin-top:4px;padding:2px 10px;border:2px solid #2e7d4f;color:#2e7d4f;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:1px;transform:rotate(-3deg);">PAGADO</div>'
+    : '';
+}
+
 
 function mensajeRecibo(d){
   const rc = d.rc;
@@ -3508,7 +3534,7 @@ function renderCuentasCompleto(body){
     + (pagosCache.length
         ? pagosCache.map(p=>
             '<div class="comp-item"><span class="t">' + esc(p.fecha) + ' · ' + esc(p.apartamento_id)
-            + ' <span style="color:var(--dim);">' + esc(p.forma_pago||'') + '</span></span>'
+            + ' <span style="color:var(--dim);">' + escHtml(p.forma_pago||'') + '</span></span>'
             + '<span style="color:var(--green);">' + fmtMoney(p.monto) + '</span></div>').join('')
         : '<div class="empty">Todavía no hay cobros registrados.</div>');
   body.appendChild(secUlt);
@@ -3527,13 +3553,15 @@ function renderReportadosSeccion(body){
         ? lista.map(p=>{
             const apt = apartments.find(a=>a.id===p.apartamento_id) || {};
             return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:6px;">'
-              + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + esc(p.apartamento_id) + '</b> · ' + esc(apt.propietario||'') + '</span>'
+              + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id) + '</b> · ' + escHtml(apt.propietario||'') + '</span>'
               + '<b style="color:var(--amber);">' + fmtMoney(Number(p.monto)) + '</b></div>'
-              + '<div style="font-size:12px;color:var(--sub);">' + esc(p.fecha) + ' · ' + esc(p.forma_pago||'')
-              + (p.banco ? ' · ' + esc(p.banco) : '') + (p.referencia ? ' · Ref. <b>' + esc(p.referencia) + '</b>' : '')
-              + (p.nota ? '<br>“' + esc(p.nota) + '”' : '') + '</div>'
+              + '<div style="font-size:12px;color:var(--sub);">' + escHtml(p.fecha) + ' · ' + escHtml(p.forma_pago||'')
+              + (p.banco ? ' · ' + escHtml(p.banco) : '') + (p.referencia ? ' · Ref. <b>' + escHtml(p.referencia) + '</b>' : '')
+              + (p.nota ? '<br>“' + escHtml(p.nota) + '”' : '') + '</div>'
               + '<div style="display:flex;gap:6px;"><button class="chip" data-rep-ok="' + p.id + '" style="background:var(--green);color:#fff;flex:1;">✓ Confirmar</button>'
-              + '<button class="chip" data-rep-no="' + p.id + '" style="background:var(--red);color:#fff;flex:1;">✕ Rechazar</button></div></div>';
+              + '<button class="chip" data-rep-ed="' + p.id + '" style="background:var(--panel2);flex:1;">✏️ Corregir</button>'
+              + '<button class="chip" data-rep-no="' + p.id + '" style="background:var(--red);color:#fff;flex:1;">✕ Rechazar</button></div>'
+              + '<div data-rep-form="' + p.id + '"></div></div>';
           }).join('')
           + '<div class="assumption">Confirma solo lo que ya viste en el banco. Al confirmarlo se aplica al recibo más viejo que tenga pendiente.</div>'
         : '<div class="empty" style="padding:10px 4px;">No hay pagos reportados esperando revisión.</div>');
@@ -3550,6 +3578,36 @@ function renderReportadosSeccion(body){
     await refrescarCuentas();
     await recargarDeuda();
   }; });
+  // corregir lo que el vecino escribio mal antes de confirmarlo
+  sec.querySelectorAll('[data-rep-ed]').forEach(b=>{ b.onclick = ()=>{
+    const p = lista.find(x=>x.id===b.dataset.repEd);
+    const host = sec.querySelector('[data-rep-form="' + p.id + '"]');
+    if(host.innerHTML){ host.innerHTML = ''; return; }
+    const formas = ['Transferencia','Pago móvil','Zelle','Efectivo','Otro'];
+    if(p.forma_pago && !formas.includes(p.forma_pago)) formas.unshift(p.forma_pago);
+    host.innerHTML = '<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;">'
+      + '<div class="form-row"><label>Monto $</label><input type="number" step="0.01" min="0.01" data-c="monto" value="' + Number(p.monto).toFixed(2) + '"></div>'
+      + '<div class="form-row"><label>Fecha</label><input type="date" data-c="fecha" value="' + escHtml(p.fecha) + '"></div>'
+      + '<div class="form-row"><label>Forma</label><select data-c="forma_pago">' + formas.map(f=>'<option' + (f===p.forma_pago ? ' selected' : '') + '>' + escHtml(f) + '</option>').join('') + '</select></div>'
+      + '<div class="form-row"><label>Banco</label><input type="text" data-c="banco" value="' + escHtml(p.banco||'') + '"></div>'
+      + '<div class="form-row"><label>Referencia</label><input type="text" data-c="referencia" value="' + escHtml(p.referencia||'') + '"></div>'
+      + '<div class="form-row"><label>Nota</label><input type="text" data-c="nota" value="' + escHtml(p.nota||'') + '"></div>'
+      + '<button class="chip" data-c-guardar style="background:var(--accent);color:#fff;width:100%;margin-top:4px;">💾 Guardar corrección</button>'
+      + '<div class="assumption">Solo corrige los datos; el pago sigue esperando que lo confirmes.</div></div>';
+    host.querySelector('[data-c-guardar]').onclick = async e=>{
+      const v = c=>host.querySelector('[data-c="' + c + '"]').value.trim();
+      const monto = parseFloat(v('monto'));
+      if(!(monto > 0)){ alert('El monto debe ser mayor que cero.'); return; }
+      e.target.disabled = true;
+      const { error } = await db.from('pagos').update({
+        monto, fecha: v('fecha') || p.fecha, forma_pago: v('forma_pago'),
+        banco: v('banco') || null, referencia: v('referencia') || null, nota: v('nota') || null
+      }).eq('id', p.id).eq('estado', 'reportado');
+      if(error){ e.target.disabled = false; alert('No se pudo guardar: ' + error.message); return; }
+      await refrescarCuentas();
+    };
+  }; });
+
   sec.querySelectorAll('[data-rep-no]').forEach(b=>{ b.onclick = async ()=>{
     const p = lista.find(x=>x.id===b.dataset.repNo);
     const motivo = prompt('¿Por qué se rechaza? El vecino verá este motivo en su portal.', 'No aparece en el banco');
@@ -3603,9 +3661,9 @@ function renderUsuariosSeccion(body){
   const sec = document.createElement('div');
   sec.style.marginTop = '4px';
   const opcionesApt = apartments.slice().sort((a,b)=>a.id.localeCompare(b.id))
-    .map(a=>'<option value="'+esc(a.id)+'">'+esc(a.id)+' · '+esc(a.propietario||'')+'</option>').join('');
+    .map(a=>'<option value="'+escHtml(a.id)+'">'+escHtml(a.id)+' · '+escHtml(a.propietario||'')+'</option>').join('');
   sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#5b6472;"><span class="tcIcono">🔐</span>Usuarios del sistema</h3>'
-    + '<div class="assumption" style="margin-top:0;">Los vecinos entran por el portal (' + esc(urlPortal()) + '): ven solo su apartamento y reportan sus pagos.</div>'
+    + '<div class="assumption" style="margin-top:0;">Los vecinos entran por el portal (' + escHtml(urlPortal()) + '): ven solo su apartamento y reportan sus pagos.</div>'
     + '<details id="usNuevoBox"><summary style="cursor:pointer;font-weight:700;margin:10px 0 6px;">➕ Crear un usuario</summary>'
     + '<div class="form-row"><label>Rol</label><select id="usRol"><option value="vecino">Vecino (portal)</option><option value="junta">Junta</option><option value="tesorero">Tesorero</option><option value="admin">Administrador</option><option value="mantenimiento">Mantenimiento (respaldo)</option></select></div>'
     + '<div class="assumption" id="usNotaMant" style="display:none;margin-top:0;">Cuenta de reserva con acceso total, para entrar si falla la cuenta principal o se pierde su clave. Usa un correo distinto del principal y guarda la clave en un lugar seguro.</div>'
@@ -3649,7 +3707,7 @@ function renderUsuariosSeccion(body){
   const ofrecerWhatsApp = (host, aptId, nombre, correo, clave, esNueva, titulo)=>{
     const a = apartments.find(x=>x.id===aptId);
     host.innerHTML = '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:6px;background:color-mix(in srgb, var(--green) 10%, transparent);">'
-      + '<b>' + titulo + '</b><span style="font-size:12px;">Correo: ' + esc(correo) + '<br>Clave: <b>' + esc(clave) + '</b></span>'
+      + '<b>' + titulo + '</b><span style="font-size:12px;">Correo: ' + escHtml(correo) + '<br>Clave: <b>' + escHtml(clave) + '</b></span>'
       + '<div style="display:flex;gap:6px;">' + (a ? '<button class="chip" data-us-wa style="background:var(--green);color:#fff;flex:1;">📲 Enviar por WhatsApp</button>' : '')
       + '<button class="chip" data-us-copiar style="background:var(--panel2);flex:1;">📋 Copiar mensaje</button></div></div>';
     const msj = ()=>mensajeAcceso(nombre, aptId, correo, clave, esNueva);
@@ -3689,16 +3747,16 @@ function renderUsuariosSeccion(body){
   async function pintarLista(){
     const host = sec.querySelector('#usLista');
     const { data, error } = await db.from('perfiles').select('*').order('rol').order('apartamento_id').order('correo');
-    if(error){ host.innerHTML = '<div class="empty">No se pudieron leer los usuarios: ' + esc(error.message) + '</div>'; return; }
+    if(error){ host.innerHTML = '<div class="empty">No se pudieron leer los usuarios: ' + escHtml(error.message) + '</div>'; return; }
     const perfiles = data || [];
     const conUsuario = new Set(perfiles.filter(p=>p.activo && p.apartamento_id).map(p=>p.apartamento_id));
     const sinUsuario = apartments.filter(a=>!conUsuario.has(a.id)).length;
     host.innerHTML = '<h3 class="section" style="margin-top:14px;">Usuarios (' + perfiles.length + ')</h3>'
       + '<div class="assumption" style="margin-top:0;">' + sinUsuario + ' de ' + apartments.length + ' apartamentos aún no tienen usuario activo.</div>'
       + perfiles.map(p=>'<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:5px;' + (p.activo ? '' : 'opacity:.6;') + '">'
-          + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + esc(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + esc(p.nombre || '') + '</span>'
+          + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + escHtml(p.nombre || '') + '</span>'
           + '<span style="font-size:11px;font-weight:700;color:' + (p.activo ? 'var(--green)' : 'var(--red)') + ';">' + (p.activo ? 'activo' : 'inactivo') + '</span></div>'
-          + '<div style="font-size:12px;color:var(--sub);">' + esc(p.correo) + ' · ' + esc(etiquetas[p.rol] || p.rol) + '</div>'
+          + '<div style="font-size:12px;color:var(--sub);">' + escHtml(p.correo) + ' · ' + escHtml(etiquetas[p.rol] || p.rol) + '</div>'
           + (p.id === miPerfil.id ? '' : '<div style="display:flex;gap:6px;">'
             + '<button class="chip" data-us-clave="' + p.id + '" style="background:var(--panel2);flex:1;">🔑 Nueva clave</button>'
             + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>')
@@ -4053,7 +4111,7 @@ function renderFichaResumen(pane){
       if(!data || !data.length){ host.textContent = 'Sin recibos ni pagos todavía.'; return; }
       host.className = '';
       host.innerHTML = data.map(r=>
-        '<div class="comp-item"><span class="t">' + esc(r.fecha) + ' · ' + esc(r.concepto) + '</span>'
+        '<div class="comp-item"><span class="t">' + esc(r.fecha) + ' · ' + escHtml(r.concepto) + '</span>'
         + (Number(r.abono) > 0
             ? '<span style="color:var(--green);">−' + fmtMoney(Number(r.abono)) + '</span>'
             : '<span style="display:flex;align-items:center;gap:6px;">' + fmtMoney(Number(r.cargo))

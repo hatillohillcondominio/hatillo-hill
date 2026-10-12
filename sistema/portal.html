@@ -482,18 +482,19 @@ async function verRecibo(id){
     + '<div id="reciboHoja">Cargando…</div>');
   document.getElementById('rImprimir').onclick = ()=>window.print();
   try{
-    const [r, det, extra] = await Promise.all([
+    const [r, det, extra, apl] = await Promise.all([
       db.from('recibos').select('*').eq('id', id).single(),
       db.from('recibo_detalle').select('*').eq('recibo_id', id),
-      db.rpc('recibo_portal', {p_recibo: id})
+      db.rpc('recibo_portal', {p_recibo: id}),
+      db.from('aplicaciones_pago').select('monto, pagos(fecha, forma_pago, banco, referencia)').eq('recibo_id', id)
     ]);
-    const falla = [r, det, extra].find(x=>x.error);
+    const falla = [r, det, extra, apl].find(x=>x.error);
     if(falla) throw new Error(falla.error.message);
     const rc = r.data;
     const x = datos.recibos.find(y=>y.id === id) || {pagado:0};
     document.getElementById('reciboHoja').innerHTML = htmlRecibo({
       rc, detalle: det.data || [], gastos: extra.data.gastos || [],
-      repartido: Number(extra.data.repartido) || 0, pagado: x.pagado
+      repartido: Number(extra.data.repartido) || 0, pagado: x.pagado, pagos: apl.data || []
     });
   }catch(e){
     document.getElementById('reciboHoja').textContent = 'No se pudo cargar el recibo: ' + (e.message || e);
@@ -517,7 +518,7 @@ function htmlRecibo(d){
   return '<div class="rcCab"><div style="display:flex;align-items:flex-end;gap:12px;">'
     + '<img src="' + LOGO + '" alt="Hatillo Hill · Conjunto Residencial" style="height:64px;width:auto;">'
     + '<div style="font-size:11.5px;color:#555;padding-bottom:4px;">Junta de Condominio<br>Autoadministración</div></div>'
-    + '<div class="rcTipo">AVISO DE COBRO<div style="font-size:12px;font-weight:600;">N.º ' + esc(rc.periodo_id) + '-' + esc(rc.apartamento_id) + '</div>'
+    + '<div class="rcTipo">AVISO DE COBRO<div style="font-size:12px;font-weight:600;">N.º ' + esc(rc.periodo_id) + '-' + esc(rc.apartamento_id) + '</div>' + selloPagado(saldoRecibo)
     + '<div style="font-size:12px;font-weight:400;">Emitido ' + fecha(rc.emitido_en) + (rc.vence_el ? ' · vence ' + fecha(rc.vence_el) : '') + '</div></div></div>'
     + '<div class="rcDatos"><div><b>Propietario:</b> ' + esc(apt.propietario || '') + '</div><div><b>Apto:</b> ' + esc(rc.apartamento_id) + '</div>'
     + '<div><b>Mes:</b> ' + mesLegible(rc.periodo_id) + '</div><div><b>Alícuota:</b> ' + (alic*100).toLocaleString('es-VE', {maximumFractionDigits:6}) + ' %</div></div>'
@@ -533,7 +534,29 @@ function htmlRecibo(d){
     + '<div style="margin-top:10px;font-size:11px;color:#555;">' + (saldoRecibo > 0.005 ? 'Este recibo tiene pendientes $' + f2(saldoRecibo) + '.' : 'Este recibo está pagado.')
     + ' Montos en dólares; se pagan en bolívares a la tasa BCV del día del pago.'
     + (tasa && datos.saldo > 0.005 ? ' Hoy, a ' + f2(tasa.valor) + ' Bs por $, el total adeudado equivale a <b>' + bs(enBs(datos.saldo)) + '</b>.' : '')
-    + '</div>';
+    + '</div>'
+    + htmlPagosRecibo(d.pagos, saldoRecibo);
+}
+
+// constancia de pago: cada pago aplicado a este recibo, con su fecha, banco y referencia
+function htmlPagosRecibo(pagos, saldoRecibo){
+  if(!pagos || !pagos.length) return '';
+  const f2p = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fp = s=>s ? new Date(s + 'T12:00:00').toLocaleDateString('es-VE', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
+  const filas = pagos.slice().sort((a,b)=>String((a.pagos||{}).fecha).localeCompare(String((b.pagos||{}).fecha))).map(x=>{
+    const p = x.pagos || {};
+    return '<tr><td>' + fp(p.fecha) + '</td><td>' + esc(p.forma_pago || '') + '</td><td>' + esc(p.banco || '') + '</td>'
+      + '<td>' + esc(p.referencia || '') + '</td><td class="n">' + f2p(x.monto) + '</td></tr>';
+  }).join('');
+  return '<table style="margin-top:12px;"><thead><tr><th colspan="5">CONSTANCIA DE PAGO' + (saldoRecibo <= 0.005 ? ' — RECIBO PAGADO' : '') + '</th></tr>'
+    + '<tr><th>FECHA</th><th>FORMA</th><th>BANCO</th><th>REFERENCIA</th><th class="n">APLICADO $</th></tr></thead><tbody>' + filas
+    + '<tr class="tot"><td colspan="4">TOTAL PAGADO DE ESTE RECIBO</td><td class="n">' + f2p(pagos.reduce((s,x)=>s+Number(x.monto), 0)) + '</td></tr></tbody></table>';
+}
+
+function selloPagado(saldoRecibo){
+  return saldoRecibo <= 0.005
+    ? '<div style="display:inline-block;margin-top:4px;padding:2px 10px;border:2px solid #2e7d4f;color:#2e7d4f;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:1px;transform:rotate(-3deg);">PAGADO</div>'
+    : '';
 }
 
 db.auth.onAuthStateChange(ev=>{ if(ev === 'SIGNED_OUT' && perfil) pantallaLogin(); });
