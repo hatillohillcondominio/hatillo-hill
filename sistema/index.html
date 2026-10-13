@@ -3208,6 +3208,7 @@ const SUBMENU_ADMIN = [
   ['cobros',      '💵 Cobros',      '#4f8f6a', 'Registrar un cobro'],
   ['pagos',       '💸 Pagos',       '#d35400', 'Pagos a proveedores'],
   ['banco',       '🏦 Banco',       '#2f8a8a', 'Banco'],
+  ['avisos',      '📣 Avisos',      '#c9772f', 'Avisos a los propietarios'],
   ['usuarios',    '🔐 Usuarios',    '#5b6472', 'Usuarios del sistema']
 ];
 let adminSub = 'gastos';
@@ -3219,6 +3220,7 @@ function renderCuentasTab(body){
   const esAdmin = miPerfil.rol === 'admin';
   if(adminSub === 'usuarios' && !esAdmin) adminSub = 'gastos';
   const bloqueReportados = renderReportadosSeccion(body);
+  renderAvisosSeccion(body);
   if(esAdmin) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Cuentas del mes': 'cabecera'};
@@ -3628,6 +3630,227 @@ function renderReportadosSeccion(body){
     await refrescarCuentas();
   }; });
   return sec;
+}
+
+// ----- avisos: mensaje a la Comunidad de WhatsApp y correos del condominio -----
+// WhatsApp no deja publicar solo en un grupo sin su API de pago: el sistema arma
+// el mensaje y abre WhatsApp con el texto listo; se elige la Comunidad y se envia.
+// Los correos si salen solos, desde la cuenta de Gmail del condominio (funcion "avisos").
+const PLANTILLAS_AVISO = [
+  {nombre: 'Recibos del mes', texto: '📨 *Hatillo Hill · Recibos de {mes}*\n\nYa están disponibles los recibos de condominio de {mes}. Vencen el {vence}.\n\nCada propietario puede ver el suyo, con el monto en dólares y en bolívares a la tasa BCV del día, en el portal:\n{portal}\n\n*Datos para pagar*\n{datos_pago}\n\nAl pagar, reporta tu pago en el portal para que la tesorería lo confirme. Gracias.\n_Junta de Condominio_'},
+  {nombre: 'Recordatorio de pago', texto: '⏰ *Hatillo Hill · Recordatorio*\n\nEl recibo de condominio de {mes} vence el {vence}. Tasa BCV de hoy: {tasa} Bs por $.\n\nSi ya pagaste, recuerda reportarlo en el portal: {portal}\n\nGracias.\n_Junta de Condominio_'},
+  {nombre: 'Aviso general', texto: '📣 *Hatillo Hill · Aviso*\n\n(escribe aquí el aviso)\n\n_Junta de Condominio_'},
+  {nombre: 'Convocatoria a asamblea', texto: '🗳️ *Hatillo Hill · Convocatoria*\n\nSe convoca a los propietarios a asamblea el día ___ a las ___, en ___.\n\nOrden del día:\n1. \n2. \n\n_Junta de Condominio_'}
+];
+
+async function llamarFuncion(nombre, cuerpo){
+  const { data, error } = await db.functions.invoke(nombre, { body: cuerpo });
+  if(error){
+    let msj = error.message;
+    try{ const j = await error.context.json(); if(j && j.error) msj = j.error; }catch(e){}
+    throw new Error(msj);
+  }
+  return data;
+}
+
+let tasaAvisos = null;
+async function tasaBcvHoy(){
+  if(tasaAvisos) return tasaAvisos;
+  try{
+    const j = await (await fetch('https://ve.dolarapi.com/v1/dolares/oficial', {cache:'no-store'})).json();
+    const v = Number(j.promedio || j.venta || j.compra);
+    if(v > 0) tasaAvisos = v;
+  }catch(e){}
+  if(!tasaAvisos && tasaDia) tasaAvisos = Number(tasaDia);
+  return tasaAvisos;
+}
+
+function correosDe(a){
+  return String(a.correo || a.contacto2_correo || '').split(/[;,\s]+/).map(s=>s.trim()).filter(s=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s));
+}
+
+function renderAvisosSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  const emitidos = periodosCache.filter(p=>p.estado !== 'abierto').map(p=>p.id).sort().reverse();
+  const f2 = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fecha = s=>s ? new Date(s + 'T12:00:00').toLocaleDateString('es-VE', {day:'2-digit', month:'2-digit', year:'numeric'}) : '';
+  const portal = new URL('portal.html', location.href).href;
+  let plantillas = PLANTILLAS_AVISO;
+  let datosPago = '';
+
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#c9772f;"><span class="tcIcono">📣</span>Avisos a los propietarios</h3>'
+    + '<div class="form-row"><label>Mes</label><select id="avMes">' + (emitidos.length ? emitidos.map(id=>'<option value="' + id + '">' + mesLegible(id) + '</option>').join('') : '<option value="">— sin recibos emitidos —</option>') + '</select></div>'
+
+    + '<h3 class="section" style="margin-top:12px;">📲 Mensaje a la Comunidad de WhatsApp</h3>'
+    + '<div class="form-row"><label>Plantilla</label><select id="avPlantilla"></select></div>'
+    + '<textarea id="avTexto" style="width:100%;min-height:200px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px;font-size:12.5px;line-height:1.45;"></textarea>'
+    + '<div class="assumption" style="margin-top:4px;">Puedes editar el texto antes de enviarlo. *texto* sale en negrita y _texto_ en cursiva en WhatsApp.</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
+      + '<button class="chip" id="avWhats" style="background:var(--green);color:#fff;flex:1 1 100%;">📲 Abrir WhatsApp para enviar a la Comunidad</button>'
+      + '<button class="chip" id="avCopiar" style="background:var(--panel2);flex:1;">📋 Copiar</button>'
+      + '<button class="chip" id="avCorreoTodos" style="background:var(--panel2);flex:1;">📧 Enviar también por correo</button>'
+      + (miPerfil.rol === 'admin' ? '<button class="chip" id="avGuardar" style="background:var(--panel2);flex:1;">💾 Guardar plantilla</button>' : '')
+    + '</div>'
+    + '<div class="assumption">WhatsApp se abre con el mensaje listo: elige la Comunidad (o su grupo de avisos) y pulsa enviar.</div>'
+
+    + '<h3 class="section" style="margin-top:14px;">📧 Recibo por correo a cada propietario</h3>'
+    + '<div class="assumption" style="margin-top:0;">Cada uno recibe su monto del mes y su deuda total en $ y en Bs, el vencimiento, los datos para pagar y el enlace al portal. Sale desde hatillohillcondominio@gmail.com.</div>'
+    + '<div id="avEstado" class="empty" style="padding:8px;">Cargando…</div>'
+    + '<div id="avResultado"></div>';
+  body.appendChild(sec);
+
+  const selMes = sec.querySelector('#avMes'), selPl = sec.querySelector('#avPlantilla'), txt = sec.querySelector('#avTexto');
+
+  async function rellenar(texto){
+    const per = periodosCache.find(p=>p.id===selMes.value);
+    const tasa = await tasaBcvHoy();
+    return texto
+      .split('{mes}').join(selMes.value ? mesLegible(selMes.value) : '___')
+      .split('{vence}').join(per && per.vence_el ? fecha(per.vence_el) : '___')
+      .split('{tasa}').join(tasa ? f2(tasa) : '___')
+      .split('{portal}').join(portal)
+      .split('{datos_pago}').join(datosPago || '(ver en el portal)');
+  }
+  const pintarPlantillas = ()=>{
+    selPl.innerHTML = plantillas.map((p, i)=>'<option value="' + i + '">' + escHtml(p.nombre) + '</option>').join('');
+  };
+  const usarPlantilla = async ()=>{ txt.value = await rellenar((plantillas[selPl.value] || plantillas[0]).texto); };
+
+  Promise.all([
+    db.from('configuracion').select('clave, valor').in('clave', ['datos_pago_portal', 'avisos_plantillas'])
+  ]).then(async ([cfg])=>{
+    (cfg.data || []).forEach(c=>{
+      if(c.clave === 'datos_pago_portal') datosPago = (c.valor || '').trim();
+      if(c.clave === 'avisos_plantillas'){ try{ const l = JSON.parse(c.valor); if(Array.isArray(l) && l.length) plantillas = l; }catch(e){} }
+    });
+    pintarPlantillas();
+    await usarPlantilla();
+    pintarEstadoCorreos();
+  });
+  selPl.onchange = usarPlantilla;
+  selMes.onchange = async ()=>{ await usarPlantilla(); pintarEstadoCorreos(); };
+
+  sec.querySelector('#avWhats').onclick = ()=>{
+    const m = txt.value.trim();
+    if(!m){ alert('Escribe el mensaje.'); return; }
+    const url = preferWhatsappEscritorio ? 'whatsapp://send?text=' + encodeURIComponent(m) : 'https://wa.me/?text=' + encodeURIComponent(m);
+    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  sec.querySelector('#avCopiar').onclick = async e=>{
+    try{ await navigator.clipboard.writeText(txt.value); e.target.textContent = '✓ Copiado'; setTimeout(()=>{ e.target.textContent = '📋 Copiar'; }, 1800); }
+    catch(err){ prompt('Copia el mensaje:', txt.value); }
+  };
+  const btnGuardar = sec.querySelector('#avGuardar');
+  if(btnGuardar) btnGuardar.onclick = async ()=>{
+    const nombre = prompt('Nombre de la plantilla (si ya existe, se reemplaza):', (plantillas[selPl.value] || {}).nombre || '');
+    if(!nombre || !nombre.trim()) return;
+    // se guarda con las variables, no con los valores de hoy
+    let texto = txt.value;
+    if(selMes.value) texto = texto.split(mesLegible(selMes.value)).join('{mes}');
+    texto = texto.split(portal).join('{portal}');
+    if(datosPago) texto = texto.split(datosPago).join('{datos_pago}');
+    const lista = plantillas.slice();
+    const i = lista.findIndex(p=>p.nombre.toLowerCase() === nombre.trim().toLowerCase());
+    if(i >= 0) lista[i] = {nombre: nombre.trim(), texto}; else lista.push({nombre: nombre.trim(), texto});
+    const { error } = await db.from('configuracion').upsert({clave: 'avisos_plantillas', valor: JSON.stringify(lista)});
+    if(error){ alert('No se pudo guardar: ' + error.message); return; }
+    plantillas = lista; pintarPlantillas(); selPl.value = String(i >= 0 ? i : lista.length - 1);
+  };
+
+  // aviso general por correo: el mismo texto a todos los propietarios con correo
+  sec.querySelector('#avCorreoTodos').onclick = async e=>{
+    const m = txt.value.trim();
+    if(!m){ alert('Escribe el mensaje.'); return; }
+    const destinos = [...new Set(apartments.flatMap(correosDe).map(c=>c.toLowerCase()))];
+    if(!destinos.length){ alert('No hay propietarios con correo.'); return; }
+    const asunto = m.split('\n').find(l=>l.trim()).replace(/[*_~]/g, '').replace(/^[^\wÁÉÍÓÚÑáéíóúñ]+/, '').trim().slice(0, 120) || 'Aviso de la Junta de Condominio';
+    if(!confirm('Se enviará este mensaje por correo a ' + destinos.length + ' direcciones.\n\nAsunto: ' + asunto + '\n\n¿Enviar?')) return;
+    const texto = m.replace(/[*_~]/g, '');
+    e.target.disabled = true; e.target.textContent = 'Enviando…';
+    try{
+      const r = await llamarFuncion('avisos', { correos: destinos.map(para=>({para, asunto, texto})) });
+      mostrarResultado(r, 'aviso general');
+    }catch(err){ alert('No se pudo enviar: ' + (err.message || err)); }
+    e.target.disabled = false; e.target.textContent = '📧 Enviar también por correo';
+  };
+
+  function mostrarResultado(r, que){
+    sec.querySelector('#avResultado').innerHTML = '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:4px;">'
+      + '<b>' + (r.enviados ? '✓ ' : '') + r.enviados + ' correos enviados (' + que + ')</b>'
+      + (r.fallidos && r.fallidos.length ? '<span style="color:var(--red);font-size:12px;">No salieron ' + r.fallidos.length + ': '
+          + r.fallidos.map(f=>escHtml(f.para) + ' (' + escHtml(f.error) + ')').join('; ') + '</span>' : '')
+      + '</div>';
+  }
+
+  // recibo personalizado por correo
+  async function pintarEstadoCorreos(){
+    const host = sec.querySelector('#avEstado');
+    if(!selMes.value){ host.textContent = 'Todavía no hay recibos emitidos.'; return; }
+    const [r, d] = await Promise.all([
+      db.from('recibos').select('id, apartamento_id, monto_total, saldo_anterior, vence_el, enviado_en').eq('periodo_id', selMes.value),
+      db.from('v_deuda').select('id, monto')
+    ]);
+    if(r.error){ host.textContent = r.error.message; return; }
+    const deuda = {}; (d.data || []).forEach(x=>{ deuda[x.id] = Number(x.monto); });
+    const filas = (r.data || []).map(x=>{
+      const a = apartments.find(y=>y.id===x.apartamento_id) || {id: x.apartamento_id};
+      return Object.assign({}, x, {apt: a, correos: correosDe(a), deuda: deuda[x.apartamento_id] || 0});
+    });
+    const conCorreo = filas.filter(x=>x.correos.length);
+    const pendientes = conCorreo.filter(x=>!x.enviado_en);
+    const sinCorreo = filas.filter(x=>!x.correos.length).map(x=>x.apartamento_id);
+    host.className = '';
+    host.innerHTML = '<div style="font-size:12.5px;line-height:1.6;">'
+      + '<b>' + filas.length + '</b> recibos · <b>' + conCorreo.length + '</b> con correo · <b>' + (conCorreo.length - pendientes.length) + '</b> ya avisados'
+      + (sinCorreo.length ? '<br><span style="color:var(--sub);">Sin correo: ' + sinCorreo.join(', ') + '</span>' : '') + '</div>'
+      + '<div style="display:flex;gap:6px;margin-top:6px;">'
+      + '<button class="chip" id="avRecPend" style="background:var(--accent);color:#fff;flex:1;"' + (pendientes.length ? '' : ' disabled') + '>📧 Enviar a los no avisados (' + pendientes.length + ')</button>'
+      + '<button class="chip" id="avRecTodos" style="background:var(--panel2);flex:1;"' + (conCorreo.length ? '' : ' disabled') + '>Reenviar a todos (' + conCorreo.length + ')</button></div>';
+    const enviar = async (lista, b)=>{
+      if(!lista.length) return;
+      if(!confirm('Se enviará el recibo de ' + mesLegible(selMes.value) + ' por correo a ' + lista.length + ' propietarios. ¿Enviar?')) return;
+      const tasa = await tasaBcvHoy();
+      const per = periodosCache.find(p=>p.id===selMes.value) || {};
+      const enBs = n=>tasa ? ' (Bs ' + f2(Number(n) * tasa) + ')' : '';
+      const correos = [];
+      lista.forEach(x=>{
+        const vence = x.vence_el || per.vence_el;
+        const lineas = [
+          'Hola ' + (x.apt.propietario || '') + ',',
+          '',
+          'Ya está disponible el recibo de condominio de ' + mesLegible(selMes.value) + ' del apartamento ' + x.apartamento_id + '.',
+          '',
+          'Cuota del mes: $' + f2(x.monto_total) + enBs(x.monto_total),
+          'Total adeudado hoy: $' + f2(x.deuda) + enBs(x.deuda),
+          vence ? 'Vence el: ' + fecha(vence) : '',
+          tasa ? 'Tasa BCV de hoy: ' + f2(tasa) + ' Bs por $. Si pagas en bolívares, usa la tasa del día del pago.' : '',
+          '',
+          'Ve el recibo completo y reporta tu pago en el portal:',
+          portal,
+          '',
+          datosPago ? 'Datos para pagar:\n' + datosPago : '',
+          '',
+          'Junta de Condominio Hatillo Hill'
+        ];
+        x.correos.forEach((para, i)=>correos.push({
+          para, recibo_id: i === 0 ? x.id : undefined,
+          asunto: 'Hatillo Hill · Recibo de ' + mesLegible(selMes.value) + ' · Apto ' + x.apartamento_id,
+          texto: lineas.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+        }));
+      });
+      b.disabled = true; const t0 = b.textContent; b.textContent = 'Enviando…';
+      try{
+        const r = await llamarFuncion('avisos', { correos });
+        mostrarResultado(r, 'recibos de ' + mesLegible(selMes.value));
+      }catch(err){ alert('No se pudo enviar: ' + (err.message || err)); }
+      b.disabled = false; b.textContent = t0;
+      pintarEstadoCorreos();
+    };
+    host.querySelector('#avRecPend').onclick = e=>enviar(pendientes, e.target);
+    host.querySelector('#avRecTodos').onclick = e=>enviar(conCorreo, e.target);
+  }
 }
 
 // ----- usuarios del sistema (solo admin) -----
