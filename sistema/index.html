@@ -249,6 +249,16 @@
   .presuScroll{overflow-x:auto;}
   .presuControl{display:flex;justify-content:space-between;align-items:baseline;padding:10px 12px;border-radius:10px;background:var(--panel2);border:1px solid var(--border);margin:10px 0;}
   .presuControl b{font-size:18px;}
+  .presuVista{display:flex;gap:6px;margin:4px 0 8px;}
+  .presuVista button{flex:1;border:1px solid var(--border);background:var(--panel2);color:var(--sub);border-radius:8px;padding:7px;font-size:12.5px;font-weight:700;cursor:pointer;}
+  .presuVista button.activo{background:#a0522d;color:#fff;border-color:#a0522d;}
+  .presuVista button:disabled{opacity:.5;cursor:default;}
+  .pFila{padding:8px 2px;border-bottom:1px dashed var(--border);}
+  .pCab{display:flex;justify-content:space-between;gap:8px;font-size:13px;font-weight:600;margin-bottom:5px;}
+  .pBarra{position:relative;height:10px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);overflow:visible;}
+  .pLleno{height:100%;border-radius:6px;transition:width .3s;}
+  .pRitmo{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.55;border-radius:1px;}
+  .pPie{font-size:11.5px;color:var(--sub);margin-top:4px;font-variant-numeric:tabular-nums;}
 
   /* visor de recibos: ventana encima de todo; al imprimir solo sale la hoja */
   #reciboModal{position:fixed;inset:0;z-index:200;background:rgba(40,35,25,.45);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px;}
@@ -2813,11 +2823,16 @@ function pintarPasosDelMes(body, per){
   body.appendChild(div);
 }
 
+let presupuestoVista = 'anio';
+try{ presupuestoVista = localStorage.getItem('hh_presu_vista') || 'anio'; }catch(e){}
+
 function renderPresupuestoSeccion(body){
   const p = presupuestoCache;
-  if(!p || !mesActual) return;
-  const idx = indiceMesPresupuesto(p, mesActual);
-  if(idx < 0 || idx > 11) return;
+  if(!p) return;
+  const idxRef = indiceMesPresupuesto(p, mesActual || mesDeHoy());
+  const idx = mesActual ? indiceMesPresupuesto(p, mesActual) : -1;
+  const hayMes = idx >= 0 && idx <= 11;
+  const vista = hayMes ? presupuestoVista : 'anio';
   const cuota = cuotaPresupuesto(p);
   const fmt2 = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
 
@@ -2830,6 +2845,64 @@ function renderPresupuestoSeccion(body){
   const cont = det.querySelector('#presuCuerpo');
 
   if(presupuestoEditando){ pintarEdicionPresupuesto(cont); return; }
+
+  const selector = '<div class="presuVista">'
+    + '<button data-presu-vista="anio" class="' + (vista==='anio' ? 'activo' : '') + '">📅 Año completo</button>'
+    + '<button data-presu-vista="mes" class="' + (vista==='mes' ? 'activo' : '') + '"' + (hayMes ? '' : ' disabled title="Abre un mes para verlo"') + '>🗓️ ' + (hayMes ? mesLegible(mesActual) : 'Mes') + '</button></div>';
+  const enlazarSelector = ()=>{
+    cont.querySelectorAll('[data-presu-vista]').forEach(b=>{ b.onclick = ()=>{
+      presupuestoVista = b.dataset.presuVista;
+      try{ localStorage.setItem('hh_presu_vista', presupuestoVista); }catch(e){}
+      renderSidebar();
+    }; });
+    const btnEd = cont.querySelector('#presuEditar');
+    if(btnEd) btnEd.onclick = ()=>{ presupuestoEditando = true; renderSidebar(); };
+  };
+  const botonEditar = puedeEditar() ? '<button class="chip" id="presuEditar" style="background:#a0522d;color:#fff;width:100%;margin-top:4px;">✏️ Editar partidas del presupuesto</button>' : '';
+
+  if(vista === 'anio'){
+    // ejecucion del año: lo gastado en cada partida contra su total anual
+    const total = presupuestoTotal(p);
+    const meses = Math.max(0, Math.min(12, idxRef + 1));
+    const ritmo = meses / 12 * 100;
+    const gastoAnioCat = {};
+    p.gastosAnio.filter(g=>g.prorrateable).forEach(g=>{
+      gastoAnioCat[g.categoria_id] = (gastoAnioCat[g.categoria_id]||0) + Number(g.monto);
+    });
+    const catsConPartida = new Set(p.partidas.map(x=>x.categoria_id).filter(Boolean));
+    const color = pct=>pct > 100 ? 'var(--red)' : (pct > ritmo + 10 ? 'var(--amber)' : 'var(--green)');
+    const barra = (pct)=>'<div class="pBarra"><div class="pLleno" style="width:' + Math.min(Math.max(pct, 0), 100).toFixed(1) + '%;background:' + color(pct) + ';"></div>'
+      + '<div class="pRitmo" style="left:' + ritmo.toFixed(1) + '%;" title="Ritmo esperado a la fecha: ' + ritmo.toFixed(0) + ' %"></div></div>';
+    let gastadoTot = 0;
+    const filas = p.partidas.map(x=>{
+      const anual = x.montos.reduce((s,m)=>s+m, 0);
+      const gastado = x.categoria_id ? (gastoAnioCat[x.categoria_id]||0) : 0;
+      gastadoTot += gastado;
+      const pct = anual > 0 ? gastado / anual * 100 : (gastado > 0 ? 999 : 0);
+      return '<div class="pFila"><div class="pCab"><span>' + esc(x.nombre) + (x.categoria_id ? '' : ' <i style="color:var(--dim);font-weight:400;">(sin categoría)</i>') + '</span>'
+        + '<b style="color:' + color(pct) + ';">' + (pct >= 999 ? '—' : pct.toFixed(0) + ' %') + '</b></div>'
+        + barra(pct)
+        + '<div class="pPie">' + fmt2(gastado) + ' de ' + fmt2(anual)
+        + ' · ' + (anual - gastado >= 0 ? 'quedan ' + fmt2(anual - gastado) : '<span style="color:var(--red);">excedido en ' + fmt2(gastado - anual) + '</span>') + '</div></div>';
+    });
+    const sinPartida = Object.keys(gastoAnioCat).filter(c=>!catsConPartida.has(c)).reduce((s,c)=>s+gastoAnioCat[c], 0);
+    if(Math.abs(sinPartida) > 0.005){
+      gastadoTot += sinPartida;
+      filas.push('<div class="pFila"><div class="pCab"><span><i>Gastos sin partida</i></span><b style="color:var(--red);">' + fmt2(sinPartida) + '</b></div>'
+        + '<div class="pPie">Gastos cargados en categorías que no tienen partida en el presupuesto.</div></div>');
+    }
+    const pctTot = total > 0 ? gastadoTot / total * 100 : 0;
+    cont.innerHTML = selector
+      + '<div class="presuControl" style="flex-direction:column;align-items:stretch;gap:6px;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:baseline;"><span>Ejecutado del año</span><b style="color:' + color(pctTot) + ';">' + pctTot.toFixed(1) + ' %</b></div>'
+        + barra(pctTot)
+        + '<div style="font-size:12px;color:var(--sub);">' + fmtMoney(gastadoTot) + ' gastado de ' + fmtMoney(total) + ' · van ' + meses + ' de 12 meses (ritmo esperado ' + ritmo.toFixed(0) + ' %)</div></div>'
+      + '<div class="assumption" style="margin-top:0;">La rayita negra marca dónde debería ir cada partida a esta fecha. Verde: dentro del ritmo · ámbar: más de 10 puntos por encima · rojo: pasó el total del año.</div>'
+      + filas.join('')
+      + botonEditar;
+    enlazarSelector();
+    return;
+  }
 
   // gasto real del mes por categoria (solo lo que se reparte)
   const gastoPorCat = {};
@@ -2860,8 +2933,8 @@ function renderPresupuestoSeccion(body){
     .reduce((s,g)=>s+Number(g.monto), 0);
   const controlAnio = cuota * mesesAnio - gastadoAnio;
 
-  cont.innerHTML =
-    '<div class="assumption">Presupuesto anual de ' + fmtMoney(presupuestoTotal(p)) + ' (' + esc(p.desde) + ' a ' + esc(p.hasta) + ')'
+  cont.innerHTML = selector
+    + '<div class="assumption">Presupuesto anual de ' + fmtMoney(presupuestoTotal(p)) + ' (' + esc(p.desde) + ' a ' + esc(p.hasta) + ')'
       + (p.nota ? ' · ' + esc(p.nota) : '') + '. Cada mes se cobra la cuota fija de <b>' + fmtMoney(cuota) + '</b>; '
       + 'la diferencia con lo gastado sale en el recibo como "Asiento control del presupuesto anual".</div>'
     + '<div class="presuScroll"><table class="tablaPresu"><thead><tr><th>Partida · ' + mesLegible(mesActual) + '</th>'
@@ -2876,9 +2949,8 @@ function renderPresupuestoSeccion(body){
       + ' − gastado ' + fmt2(gastadoAnio) + '</span>'
       + '<b style="color:' + (controlAnio >= 0 ? 'var(--green)' : 'var(--red)') + ';">'
       + (controlAnio >= 0 ? 'Sobran ' : 'Faltan ') + fmtMoney(Math.abs(controlAnio)) + '</b></div>'
-    + (puedeEditar() ? '<button class="chip" id="presuEditar" style="background:#a0522d;color:#fff;width:100%;margin-top:4px;">✏️ Editar partidas del presupuesto</button>' : '');
-  const btnEd = document.getElementById('presuEditar');
-  if(btnEd) btnEd.onclick = ()=>{ presupuestoEditando = true; renderSidebar(); };
+    + botonEditar;
+  enlazarSelector();
 }
 
 // edicion: una fila por partida con sus 12 meses
@@ -3306,7 +3378,7 @@ function renderCuentasCompleto(body){
     catch(e){ alert('No se pudo abrir el mes: ' + (e.message||e)); }
   };
 
-  if(!per) return;
+  if(!per){ renderPresupuestoSeccion(body); return; }
 
   const cerrado = per.estado === 'cerrado';
   const emitido = per.estado !== 'abierto';
