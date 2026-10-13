@@ -2805,6 +2805,21 @@ async function cargarPresupuesto(){
   });
 }
 
+// lo cobrado en el año hasta el mes idx: la cuota, salvo los meses que facturo
+// la administradora anterior, que cuentan lo que ella facturo
+function cobradoPresupuesto(p, idx){
+  let s = 0;
+  const cuota = cuotaPresupuesto(p);
+  const [dy, dm] = p.desde.split('-').map(Number);
+  for(let k = 0; k <= idx && k < 12; k++){
+    const m0 = dy * 12 + (dm - 1) + k;
+    const id = Math.floor(m0 / 12) + '-' + String(m0 % 12 + 1).padStart(2, '0');
+    const per = periodosCache.find(x=>x.id === id);
+    s += per && per.externo ? (Number(per.facturado_externo) || 0) : cuota;
+  }
+  return Math.round(s * 100) / 100;
+}
+
 function presupuestoTotal(p){
   return p.partidas.reduce((s,x)=>s + x.montos.reduce((t,m)=>t+m, 0), 0);
 }
@@ -2945,7 +2960,13 @@ function renderPresupuestoSeccion(body){
       + '<div class="presuControl" style="flex-direction:column;align-items:stretch;gap:6px;">'
         + '<div style="display:flex;justify-content:space-between;align-items:baseline;"><span>Ejecutado del año</span><b style="color:' + color(pctTot) + ';">' + pctTot.toFixed(1) + ' %</b></div>'
         + barra(pctTot)
-        + '<div style="font-size:12px;color:var(--sub);">' + fmtMoney(gastadoTot) + ' gastado de ' + fmtMoney(total) + ' · van ' + meses + ' de 12 meses (ritmo esperado ' + ritmo.toFixed(0) + ' %)</div></div>'
+        + '<div style="font-size:12px;color:var(--sub);">' + fmtMoney(gastadoTot) + ' gastado de ' + fmtMoney(total) + ' · van ' + meses + ' de 12 meses (ritmo esperado ' + ritmo.toFixed(0) + ' %)</div>'
+        + (meses > 0 ? (()=>{ const cob = cobradoPresupuesto(p, meses - 1); const sal = cob - gastadoTot;
+            const ext = periodosCache.filter(x=>x.externo && indiceMesPresupuesto(p, x.id) >= 0 && indiceMesPresupuesto(p, x.id) < meses);
+            return '<div style="font-size:12px;color:var(--sub);">Cobrado en el año: ' + fmtMoney(cob)
+              + (ext.length ? ' (' + ext.map(x=>mesLegible(x.id) + ' por la administradora anterior: ' + fmtMoney(Number(x.facturado_externo)||0)).join('; ') + ')' : '')
+              + ' · <b style="color:' + (sal >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + (sal >= 0 ? 'sobran ' : 'faltan ') + fmtMoney(Math.abs(sal)) + '</b></div>'; })() : '')
+        + '</div>'
       + '<div class="assumption" style="margin-top:0;">La rayita negra marca dónde debería ir cada partida a esta fecha. Verde: dentro del ritmo · ámbar: más de 10 puntos por encima · rojo: pasó el total del año.</div>'
       + filas.join('')
       + botonEditar;
@@ -2980,7 +3001,7 @@ function renderPresupuestoSeccion(body){
   const mesesAnio = idx + 1;
   const gastadoAnio = p.gastosAnio.filter(g=>g.prorrateable && indiceMesPresupuesto(p, g.periodo_id) <= idx)
     .reduce((s,g)=>s+Number(g.monto), 0);
-  const controlAnio = cuota * mesesAnio - gastadoAnio;
+  const controlAnio = cobradoPresupuesto(p, idx) - gastadoAnio;
 
   cont.innerHTML = selector
     + '<div class="assumption">Presupuesto anual de ' + fmtMoney(presupuestoTotal(p)) + ' (' + esc(p.desde) + ' a ' + esc(p.hasta) + ')'
@@ -2994,7 +3015,7 @@ function renderPresupuestoSeccion(body){
     + '</tbody></table></div>'
     + '<div class="presuControl"><span>Asiento de ' + mesLegible(mesActual) + ' (cuota ' + fmt2(cuota) + ' − gastado ' + fmt2(totReal) + ')</span>'
       + '<b style="color:' + (asientoMes >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + (asientoMes>=0?'+':'') + fmt2(asientoMes) + '</b></div>'
-    + '<div class="presuControl"><span>Control del año: ' + mesesAnio + ' mes(es) cobrados ' + fmt2(cuota*mesesAnio)
+    + '<div class="presuControl"><span>Control del año: ' + mesesAnio + ' mes(es) cobrados ' + fmt2(cobradoPresupuesto(p, idx))
       + ' − gastado ' + fmt2(gastadoAnio) + '</span>'
       + '<b style="color:' + (controlAnio >= 0 ? 'var(--green)' : 'var(--red)') + ';">'
       + (controlAnio >= 0 ? 'Sobran ' : 'Faltan ') + fmtMoney(Math.abs(controlAnio)) + '</b></div>'
@@ -3565,11 +3586,32 @@ function renderCuentasCompleto(body){
         + '<button class="chip" id="cuEmitir" style="background:var(--green);color:#fff;width:100%;margin-top:8px;">'
         + '📨 Emitir recibos de ' + mesLegible(mesActual) + '</button>'
       : '<div class="empty">Carga primero los gastos del mes: el recibo es el reparto de esos gastos.</div>';
+    secR.innerHTML += '<details style="margin-top:10px;"><summary style="cursor:pointer;font-weight:700;font-size:12.5px;color:var(--sub);">🏢 Este mes lo facturó la administradora anterior</summary>'
+      + '<div class="assumption" style="margin-top:6px;">Para el mes de transición: sus gastos se cargan aquí para que cuenten en el presupuesto del año, '
+      + 'pero los recibos no se emiten porque ya los cobró la administradora. Primero carga los gastos; al cerrar ya no se pueden tocar.</div>'
+      + '<div class="form-row"><label>Total que facturó ($)</label><input type="number" step="0.01" min="0" id="cuFactExt" value="' + (presuMes ? cuotaPresupuesto(presupuestoCache).toFixed(2) : '') + '"></div>'
+      + '<button class="chip" id="cuCerrarExt" style="background:var(--brown);color:#fff;width:100%;margin-top:4px;">🏢 Cerrar ' + mesLegible(mesActual) + ' sin emitir recibos</button></details>';
+  } else if(per.externo){
+    secR.innerHTML += '<div class="assumption">Mes facturado por la <b>administradora anterior</b>: ' + fmtMoney(Number(per.facturado_externo) || 0)
+      + '. Sus gastos cuentan en el presupuesto del año; los recibos no se emitieron en este sistema.</div>'
+      + '<div id="cuResumenRecibos" class="empty">Cargando…</div><div id="cuListaRecibos"></div>';
   } else {
     secR.innerHTML += '<div id="cuResumenRecibos" class="empty">Cargando…</div><div id="cuListaRecibos"></div>'
       + (cerrado ? '' : '<button class="chip" id="cuCerrar" style="background:var(--brown);color:#fff;width:100%;margin-top:8px;">🔒 Cerrar el mes</button>');
   }
   body.appendChild(secR);
+
+  const btnExt = document.getElementById('cuCerrarExt');
+  if(btnExt) btnExt.onclick = async ()=>{
+    const fact = parseFloat(document.getElementById('cuFactExt').value);
+    if(!(fact >= 0)){ alert('Escribe cuánto facturó la administradora ese mes.'); return; }
+    if(!confirm('Se cerrará ' + mesLegible(mesActual) + ' como mes de la administradora anterior, con ' + fmtMoney(fact) + ' facturado.\n\n'
+      + 'Gastos cargados: ' + fmtMoney(totalGastos) + '. Después ya no se pueden cambiar. ¿Seguir?')) return;
+    btnExt.disabled = true;
+    const { error } = await db.rpc('cerrar_periodo_externo', {p_periodo: mesActual, p_facturado: fact});
+    if(error){ btnExt.disabled = false; alert('No se pudo cerrar: ' + error.message); return; }
+    await refrescarCuentas();
+  };
 
   const btnEmitir = document.getElementById('cuEmitir');
   if(btnEmitir) btnEmitir.onclick = async ()=>{
