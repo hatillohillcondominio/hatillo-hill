@@ -874,10 +874,12 @@ function pintarAvisoReportados(){
   if(!el){
     el = document.createElement('div');
     el.id = 'avisoReportados';
-    el.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:150;background:#c9772f;color:#fff;'
+    // abajo, sobre el edificio: arriba tapaba las pestañas del panel
+    const host = document.getElementById('viewport') || document.body;
+    el.style.cssText = 'position:' + (host === document.body ? 'fixed' : 'absolute') + ';bottom:70px;left:50%;transform:translateX(-50%);z-index:30;background:#c9772f;color:#fff;'
       + 'font:700 13px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:9px 12px 9px 16px;border-radius:12px;'
-      + 'box-shadow:0 6px 20px rgba(60,40,10,.3);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);';
-    document.body.appendChild(el);
+      + 'box-shadow:0 6px 20px rgba(60,40,10,.3);display:flex;align-items:center;gap:10px;max-width:calc(100% - 24px);';
+    host.appendChild(el);
   }
   const total = reportadosCache.reduce((s,p)=>s+Number(p.monto), 0);
   el.innerHTML = '<span>📥 ' + n + (n === 1 ? ' pago reportado' : ' pagos reportados') + ' por vecinos (' + fmtMoney(total) + ') ' + (n === 1 ? 'espera' : 'esperan') + ' confirmación</span>'
