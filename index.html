@@ -226,6 +226,11 @@
 </style>
 </head>
 <body>
+<div id="avisoSoloLectura" style="position:fixed;top:0;left:0;right:0;z-index:100000;background:#c1503f;color:#fff;font:600 13px/1.4 -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:8px 14px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.2);">
+  Esta app es <b>solo de consulta</b>: lo que cambies aquí ya no se guarda. Los pagos, multas y cambios se registran en el
+  <a href="sistema/" style="color:#fff;text-decoration:underline;font-weight:800;">sistema nuevo</a>.
+  <button onclick="this.parentNode.style.display='none'" style="margin-left:10px;background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:2px 8px;cursor:pointer;">✕</button>
+</div>
 <div id="app">
   <div id="viewport">
     <canvas id="canvasHost" width="1495" height="868" style="cursor: grab;"></canvas>
@@ -527,6 +532,10 @@ async function driveFindOrCreateFile(){
 }
 
 async function drivePushNow(){
+  // SOLO LECTURA desde 2026-10-13: el registro paso al sistema nuevo (Supabase).
+  // Esta app ya no escribe en el Drive del condominio.
+  if(driveConnected) setDriveStatus('connected','Solo lectura: los cambios no se guardan en Drive');
+  return;
   if(!driveConnected || !driveFileId) return;
   try{
     setDriveStatus('syncing','Guardando en Drive...');
