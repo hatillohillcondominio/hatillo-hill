@@ -446,6 +446,9 @@ let whatsappTemplateCobro = 'Hola {nombre}, le recordamos que el apartamento {id
 let recordatorioFrecuenciaDias = 15;
 let preferWhatsappEscritorio = false;
 let formasPago = formasPagoPorDefecto();
+// cobros del condominio: se pagan en Bs a la cuenta en bolivares; si es en dolares,
+// queda dicho que fue a la cuenta en $ (no se mezclan). Los proyectos usan formasPago.
+const FORMAS_COBRO = ['Transferencia Bs', 'Pago móvil Bs', 'Depósito en cuenta $', 'Efectivo $', 'Otro'];
 
 function titleCaseName(s){
   return String(s||'').trim().split(/\s+/).map(function(w){ return w ? w.charAt(0).toUpperCase()+w.slice(1).toLowerCase() : w; }).join(' ');
@@ -3497,7 +3500,7 @@ function renderCuentasCompleto(body){
     + '<div class="form-row"><label>Fecha</label><input type="date" id="pFecha" value="'+new Date().toISOString().slice(0,10)+'"></div>'
     + '<div class="form-row"><label>Monto</label><input type="number" id="pMonto" step="0.01" min="0.01" placeholder="0.00"></div>'
     + '<div class="form-row"><label>Forma</label><select id="pForma">'
-      + ['Transferencia','Pago móvil','Efectivo','Zelle','Otro'].map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
+      + FORMAS_COBRO.map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
     + '<div class="form-row"><label>Referencia</label><input type="text" id="pRef" placeholder="N.º de la transferencia"></div>'
     + '<button class="chip" id="pRegistrar" style="background:var(--green);color:#fff;width:100%;margin-top:8px;">💵 Registrar cobro</button>'
     + '<div class="assumption">El pago se aplica solo al recibo más viejo que tenga pendiente. Si sobra, queda a favor.</div>';
@@ -3587,7 +3590,7 @@ function renderReportadosSeccion(body){
     const p = lista.find(x=>x.id===b.dataset.repEd);
     const host = sec.querySelector('[data-rep-form="' + p.id + '"]');
     if(host.innerHTML){ host.innerHTML = ''; return; }
-    const formas = ['Transferencia','Pago móvil','Zelle','Efectivo','Otro'];
+    const formas = FORMAS_COBRO.slice();
     if(p.forma_pago && !formas.includes(p.forma_pago)) formas.unshift(p.forma_pago);
     host.innerHTML = '<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;">'
       + '<div class="form-row"><label>Monto $</label><input type="number" step="0.01" min="0.01" data-c="monto" value="' + Number(p.monto).toFixed(2) + '"></div>'
@@ -4161,7 +4164,7 @@ function renderFichaPago(pane){
     + '<div class="form-row"><label>Fecha</label><input type="date" id="fpFecha" value="'+new Date().toISOString().slice(0,10)+'"></div>'
     + '<div class="form-row"><label>Monto</label><input type="number" id="fpMonto" step="0.01" min="0.01" placeholder="0.00"></div>'
     + '<div class="form-row"><label>Forma</label><select id="fpForma">'
-      + ['Transferencia','Pago móvil','Efectivo','Zelle','Otro'].map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
+      + FORMAS_COBRO.map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
     + '<div class="form-row"><label>Referencia</label><input type="text" id="fpRef" placeholder="N.º de la transferencia"></div>'
     + '<button class="btn primary" id="fpRegistrar" style="background:var(--green);width:100%;margin-top:10px;">💵 Registrar pago</button>'
     + '<div class="assumption" style="margin-top:10px;">El pago se aplica al recibo más viejo que tenga pendiente. Si sobra, queda a favor.'
@@ -5028,7 +5031,8 @@ function renderDeudaTab(body){
 // funcion y no const: formasPago se inicializa arriba en el archivo, antes de este bloque
 function casillasFormaPago(){ return 5; }
 function formasPagoPorDefecto(){
-  const base = [{titulo:'Efectivo', activo:true}, {titulo:'Transferencia', activo:true}];
+  // los proyectos se cobran solo en dolares y fuera de la cuenta del condominio
+  const base = [{titulo:'Efectivo $', activo:true}, {titulo:'Zelle', activo:true}, {titulo:'Transferencia $', activo:true}];
   while(base.length < casillasFormaPago()) base.push({titulo:'', activo:false});
   return base;
 }
