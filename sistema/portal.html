@@ -489,6 +489,8 @@ function formularioPago(){
       err.textContent = 'No se pudo enviar: ' + error.message;
       return;
     }
+    // avisar a la junta por correo; si falla, el pago igual quedo reportado
+    db.functions.invoke('pago-reportado', { body: {} }).catch(()=>{});
     abrirHoja('<div style="text-align:center;padding:20px 8px;"><div style="font-size:44px;">✅</div>'
       + '<h3 style="margin:8px 0 4px;">Pago reportado</h3>'
       + '<p class="nota">La tesorería lo confirmará al verlo en el banco. Puedes seguir su estado en “Mis pagos”.</p>'

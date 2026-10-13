@@ -856,8 +856,54 @@ async function arrancarConDatos(){
   renderSidebar();
   if(!window.__animando){ window.__animando = true; animate(); }
   saveFullSnapshot();
-  if(puedeEditar()){ try{ await cargarCuentas(); }catch(e){ console.error(e); } }
+  if(puedeEditar()){
+    try{ await cargarCuentas(); }catch(e){ console.error(e); }
+    pintarAvisoReportados();
+    if(!window.__revisandoReportados){ window.__revisandoReportados = setInterval(revisarReportados, 3 * 60 * 1000); }
+  }
 }
+
+// ----- aviso de pagos reportados -----
+// Cartel arriba del sistema y contador en la pestaña del navegador mientras
+// haya pagos de vecinos esperando confirmacion. Se revisa solo cada 3 minutos.
+function pintarAvisoReportados(){
+  const n = puedeEditar() ? reportadosCache.length : 0;
+  document.title = (n ? '(' + n + ') ' : '') + 'HH Control';
+  let el = document.getElementById('avisoReportados');
+  if(!n){ if(el) el.remove(); return; }
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'avisoReportados';
+    el.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:150;background:#c9772f;color:#fff;'
+      + 'font:700 13px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:9px 12px 9px 16px;border-radius:12px;'
+      + 'box-shadow:0 6px 20px rgba(60,40,10,.3);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);';
+    document.body.appendChild(el);
+  }
+  const total = reportadosCache.reduce((s,p)=>s+Number(p.monto), 0);
+  el.innerHTML = '<span>📥 ' + n + (n === 1 ? ' pago reportado' : ' pagos reportados') + ' por vecinos (' + fmtMoney(total) + ') ' + (n === 1 ? 'espera' : 'esperan') + ' confirmación</span>'
+    + '<button id="avisoRepIr" style="background:#fff;color:#c9772f;border:none;border-radius:8px;padding:5px 10px;font-weight:800;cursor:pointer;">Revisar</button>'
+    + '<button id="avisoRepX" title="Ocultar" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:4px 8px;cursor:pointer;">✕</button>';
+  el.querySelector('#avisoRepX').onclick = ()=>{ el.style.display = 'none'; };
+  el.querySelector('#avisoRepIr').onclick = ()=>{
+    adminSub = 'cobros';
+    try{ localStorage.setItem('hh_admin_sub', 'cobros'); }catch(e){}
+    const tab = Array.from(document.querySelectorAll('.stab')).find(x=>/administraci/i.test(x.textContent));
+    if(tab) tab.click(); else renderSidebar();
+  };
+}
+
+async function revisarReportados(){
+  if(!puedeEditar()) return;
+  const { data, error } = await db.from('pagos').select('*').eq('estado', 'reportado').order('fecha');
+  if(error) return;
+  const antes = reportadosCache.map(p=>p.id).join();
+  reportadosCache = data || [];
+  const el = document.getElementById('avisoReportados');
+  // si llego uno nuevo, el cartel vuelve a aparecer aunque se hubiera ocultado
+  if(el && reportadosCache.map(p=>p.id).join() !== antes) el.style.display = '';
+  pintarAvisoReportados();
+}
+
 
 
 function setDriveStatus(state, text){
@@ -2789,6 +2835,7 @@ async function abrirMes(id){
 async function refrescarCuentas(){
   await cargarCuentas();
   renderSidebar();
+  pintarAvisoReportados();
 }
 
 async function recargarDeuda(){
