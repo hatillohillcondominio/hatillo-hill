@@ -578,6 +578,15 @@ function puedeEditar(){
   return !!miPerfil && ['admin','junta','tesorero'].includes(miPerfil.rol);
 }
 
+// El administrador es el master: solo él hace lo masivo (abrir, emitir y cerrar
+// el mes, envíos a todos, importar) y la configuración. La base lo exige igual.
+function esMaster(){
+  return !!miPerfil && miPerfil.rol === 'admin';
+}
+function notaSoloMaster(que){
+  return '<div class="assumption" style="margin-top:6px;">🔒 ' + que + ' lo hace solo el administrador del sistema.</div>';
+}
+
 function avisoBase(msg, esError){
   const btn = document.getElementById('btnSesion');
   if(!btn) return;
@@ -599,6 +608,12 @@ function pintarSesion(){
     btn.style.background = '#b8862c';
     btn.title = 'Inicia sesión para ver los datos del condominio';
   }
+  // Configuración e importar respaldos: solo el administrador (master)
+  const cfgTab = document.querySelector('.stab[data-tab="config"]');
+  if(cfgTab) cfgTab.style.display = esMaster() ? '' : 'none';
+  const impBar = document.getElementById('importBackupBar');
+  if(impBar) impBar.style.display = esMaster() ? '' : 'none';
+  if(!esMaster() && currentTab === 'config'){ currentTab = 'lista'; renderSidebar(); }
 }
 
 function pantallaLogin(mostrar, mensaje){
@@ -1187,6 +1202,7 @@ async function importLocalBackup(){
     return;
   }
   const btn = document.getElementById('btnImportBackup');
+  if(!esMaster()){ alert('Importar un respaldo lo hace solo el administrador del sistema.'); return; }
   try{
     let perm = await localBackupDirHandle.queryPermission({mode:'read'});
     if(perm!=='granted') perm = await localBackupDirHandle.requestPermission({mode:'read'});
@@ -2908,7 +2924,7 @@ function renderPresupuestoSeccion(body){
   body.appendChild(det);
   const cont = det.querySelector('#presuCuerpo');
 
-  if(presupuestoEditando){ pintarEdicionPresupuesto(cont); return; }
+  if(presupuestoEditando && esMaster()){ pintarEdicionPresupuesto(cont); return; }
 
   const selector = '<div class="presuVista">'
     + '<button data-presu-vista="anio" class="' + (vista==='anio' ? 'activo' : '') + '">📅 Año completo</button>'
@@ -2922,7 +2938,7 @@ function renderPresupuestoSeccion(body){
     const btnEd = cont.querySelector('#presuEditar');
     if(btnEd) btnEd.onclick = ()=>{ presupuestoEditando = true; renderSidebar(); };
   };
-  const botonEditar = puedeEditar() ? '<button class="chip" id="presuEditar" style="background:#a0522d;color:#fff;width:100%;margin-top:4px;">✏️ Editar partidas del presupuesto</button>' : '';
+  const botonEditar = esMaster() ? '<button class="chip" id="presuEditar" style="background:#a0522d;color:#fff;width:100%;margin-top:4px;">✏️ Editar partidas del presupuesto</button>' : '';
 
   if(vista === 'anio'){
     // ejecucion del año: lo gastado en cada partida contra su total anual
@@ -3425,11 +3441,13 @@ function renderCuentasCompleto(body){
     '<h3 class="section tituloCuenta" style="--c:#5b6472;margin-top:4px;"><span class="tcIcono">📅</span>Cuentas del mes</h3>'
     + (periodosCache.length
         ? '<div class="form-row"><label>Mes</label><select id="cuMes">'+opciones+'</select></div>'
-        : '<button class="btn primary" id="cuAbrirHoy" style="width:100%;margin:4px 0 8px;padding:12px;">'
-          + '📅 Abrir el mes de ' + mesLegible(mesDeHoy()) + '</button>')
-    + '<div class="form-row"><label>' + (periodosCache.length ? 'Abrir un mes nuevo' : 'U otro mes') + '</label>'
-      + '<input type="month" id="cuNuevoMes" value="'+mesParaAbrir()+'" style="max-width:150px;">'
-      + '<button class="chip" id="cuAbrirMes" style="background:var(--accent);color:#fff;flex:0 0 auto;">📅 Abrir</button></div>';
+        : (esMaster() ? '<button class="btn primary" id="cuAbrirHoy" style="width:100%;margin:4px 0 8px;padding:12px;">'
+          + '📅 Abrir el mes de ' + mesLegible(mesDeHoy()) + '</button>' : ''))
+    + (esMaster()
+        ? '<div class="form-row"><label>' + (periodosCache.length ? 'Abrir un mes nuevo' : 'U otro mes') + '</label>'
+          + '<input type="month" id="cuNuevoMes" value="'+mesParaAbrir()+'" style="max-width:150px;">'
+          + '<button class="chip" id="cuAbrirMes" style="background:var(--accent);color:#fff;flex:0 0 auto;">📅 Abrir</button></div>'
+        : notaSoloMaster('Abrir un mes'));
   body.appendChild(cab);
 
   const btnHoy = document.getElementById('cuAbrirHoy');
@@ -3440,7 +3458,8 @@ function renderCuentasCompleto(body){
   };
   const selMes = document.getElementById('cuMes');
   if(selMes) selMes.onchange = async ()=>{ mesActual = selMes.value; await refrescarCuentas(); };
-  document.getElementById('cuAbrirMes').onclick = async ()=>{
+  const btnAbrirMes = document.getElementById('cuAbrirMes');
+  if(btnAbrirMes) btnAbrirMes.onclick = async ()=>{
     const v = document.getElementById('cuNuevoMes').value;
     if(!v) return;
     if(periodosCache.some(p=>p.id===v)){ alert('Ese mes ya está abierto.'); return; }
@@ -3480,7 +3499,8 @@ function renderCuentasCompleto(body){
     secG.innerHTML += '<div class="assumption">Este mes ya se emitió, así que sus gastos quedaron fijos. '
       + (hayAbierto ? 'Los gastos nuevos se cargan en el mes abierto: elígelo arriba en <b>Mes</b>.'
                     : 'Los gastos nuevos van en el mes siguiente.') + '</div>'
-      + (hayAbierto ? '' : '<button class="btn primary" id="cuAbrirSiguiente" style="width:100%;padding:12px;margin-top:4px;">'
+      + (hayAbierto ? '' : !esMaster() ? notaSoloMaster('Abrir el mes siguiente')
+                    : '<button class="btn primary" id="cuAbrirSiguiente" style="width:100%;padding:12px;margin-top:4px;">'
                           + '📅 Abrir ' + mesLegible(mesParaAbrir()) + ' para cargar gastos</button>');
   }
   body.appendChild(secG);
@@ -3572,7 +3592,9 @@ function renderCuentasCompleto(body){
   secR.style.marginTop = '16px';
   secR.innerHTML = '<h3 class="section tituloCuenta" style="--c:#3b78b5;"><span class="tcIcono">📨</span>Recibos</h3>';
   const presuMes = presupuestoCache && (()=>{ const i = indiceMesPresupuesto(presupuestoCache, mesActual); return i >= 0 && i <= 11; })();
-  if(per.estado === 'abierto'){
+  if(per.estado === 'abierto' && !esMaster()){
+    secR.innerHTML += notaSoloMaster('Emitir los recibos del mes (o cerrarlo como mes de la administradora anterior)');
+  } else if(per.estado === 'abierto'){
     const cuotaMes = presuMes ? cuotaPresupuesto(presupuestoCache) : 0;
     secR.innerHTML += (prorrateable > 0 || presuMes)
       ? (presuMes
@@ -3597,7 +3619,8 @@ function renderCuentasCompleto(body){
       + '<div id="cuResumenRecibos" class="empty">Cargando…</div><div id="cuListaRecibos"></div>';
   } else {
     secR.innerHTML += '<div id="cuResumenRecibos" class="empty">Cargando…</div><div id="cuListaRecibos"></div>'
-      + (cerrado ? '' : '<button class="chip" id="cuCerrar" style="background:var(--brown);color:#fff;width:100%;margin-top:8px;">🔒 Cerrar el mes</button>');
+      + (cerrado ? '' : !esMaster() ? notaSoloMaster('Cerrar el mes')
+                  : '<button class="chip" id="cuCerrar" style="background:var(--brown);color:#fff;width:100%;margin-top:8px;">🔒 Cerrar el mes</button>');
   }
   body.appendChild(secR);
 
@@ -3852,7 +3875,7 @@ function renderAvisosSeccion(body){
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
       + '<button class="chip" id="avWhats" style="background:var(--green);color:#fff;flex:1 1 100%;">📲 Abrir WhatsApp para enviar a la Comunidad</button>'
       + '<button class="chip" id="avCopiar" style="background:var(--panel2);flex:1;">📋 Copiar</button>'
-      + '<button class="chip" id="avCorreoTodos" style="background:var(--panel2);flex:1;">📧 Enviar también por correo</button>'
+      + (esMaster() ? '<button class="chip" id="avCorreoTodos" style="background:var(--panel2);flex:1;">📧 Enviar también por correo</button>' : '')
       + (miPerfil.rol === 'admin' ? '<button class="chip" id="avGuardar" style="background:var(--panel2);flex:1;">💾 Guardar plantilla</button>' : '')
     + '</div>'
     + '<div class="assumption">WhatsApp se abre con el mensaje listo: elige la Comunidad (o su grupo de avisos) y pulsa enviar.</div>'
@@ -3923,7 +3946,8 @@ function renderAvisosSeccion(body){
   };
 
   // aviso general por correo: el mismo texto a todos los propietarios con correo
-  sec.querySelector('#avCorreoTodos').onclick = async e=>{
+  const btnCorreoTodos = sec.querySelector('#avCorreoTodos');
+  if(btnCorreoTodos) btnCorreoTodos.onclick = async e=>{
     const m = txt.value.trim();
     if(!m){ alert('Escribe el mensaje.'); return; }
     const destinos = [...new Set(apartments.flatMap(correosDe).map(c=>c.toLowerCase()))];
@@ -3968,9 +3992,11 @@ function renderAvisosSeccion(body){
     host.innerHTML = '<div style="font-size:12.5px;line-height:1.6;">'
       + '<b>' + filas.length + '</b> recibos · <b>' + conCorreo.length + '</b> con correo · <b>' + (conCorreo.length - pendientes.length) + '</b> ya avisados'
       + (sinCorreo.length ? '<br><span style="color:var(--sub);">Sin correo: ' + sinCorreo.join(', ') + '</span>' : '') + '</div>'
-      + '<div style="display:flex;gap:6px;margin-top:6px;">'
+      + (!esMaster() ? notaSoloMaster('El envío de los recibos por correo a los propietarios') :
+        '<div style="display:flex;gap:6px;margin-top:6px;">'
       + '<button class="chip" id="avRecPend" style="background:var(--accent);color:#fff;flex:1;"' + (pendientes.length ? '' : ' disabled') + '>📧 Enviar a los no avisados (' + pendientes.length + ')</button>'
-      + '<button class="chip" id="avRecTodos" style="background:var(--panel2);flex:1;"' + (conCorreo.length ? '' : ' disabled') + '>Reenviar a todos (' + conCorreo.length + ')</button></div>';
+      + '<button class="chip" id="avRecTodos" style="background:var(--panel2);flex:1;"' + (conCorreo.length ? '' : ' disabled') + '>Reenviar a todos (' + conCorreo.length + ')</button></div>');
+    if(!esMaster()) return;
     const enviar = async (lista, b)=>{
       if(!lista.length) return;
       if(!confirm('Se enviará el recibo de ' + mesLegible(selMes.value) + ' por correo a ' + lista.length + ' propietarios. ¿Enviar?')) return;
@@ -4150,6 +4176,9 @@ function renderUsuariosSeccion(body){
           + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + escHtml(p.nombre || '') + '</span>'
           + '<span style="font-size:11px;font-weight:700;color:' + (p.activo ? 'var(--green)' : 'var(--red)') + ';">' + (p.activo ? 'activo' : 'inactivo') + '</span></div>'
           + '<div style="font-size:12px;color:var(--sub);">' + escHtml(p.correo) + ' · ' + escHtml(etiquetas[p.rol] || p.rol) + '</div>'
+          + (p.id === miPerfil.id || p.rol === 'vecino' ? '' : '<div class="form-row" style="margin:0;"><label>Rol</label><select data-us-rol="' + p.id + '">'
+            + ['admin','tesorero','junta'].map(r=>'<option value="' + r + '"' + (r === p.rol ? ' selected' : '') + '>' + etiquetas[r] + '</option>').join('')
+            + '</select></div>')
           + (p.id === miPerfil.id ? '' : '<div style="display:flex;gap:6px;">'
             + '<button class="chip" data-us-clave="' + p.id + '" style="background:var(--panel2);flex:1;">🔑 Nueva clave</button>'
             + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>')
@@ -4162,6 +4191,17 @@ function renderUsuariosSeccion(body){
       b.disabled = true;
       const { error } = await db.from('perfiles').update({ activo: !p.activo }).eq('id', p.id);
       if(error){ b.disabled = false; alert('No se pudo cambiar: ' + error.message); return; }
+      await pintarLista();
+    }; });
+    host.querySelectorAll('[data-us-rol]').forEach(sel=>{ sel.onchange = async ()=>{
+      const p = perfiles.find(x=>x.id===sel.dataset.usRol);
+      const nota = {admin: 'Tendrá control total (configuración, usuarios y todo lo masivo).',
+                    tesorero: 'Manejará el dinero del día a día, sin configuración ni acciones masivas.',
+                    junta: 'Verá todo menos los sueldos y gestionará fichas y multas, sin tocar dinero.'}[sel.value];
+      if(!confirm('¿Cambiar a ' + p.correo + ' a ' + etiquetas[sel.value] + '?\n\n' + nota)){ sel.value = p.rol; return; }
+      sel.disabled = true;
+      const { error } = await db.from('perfiles').update({ rol: sel.value }).eq('id', p.id);
+      if(error){ sel.disabled = false; sel.value = p.rol; alert('No se pudo cambiar el rol: ' + error.message); return; }
       await pintarLista();
     }; });
     host.querySelectorAll('[data-us-clave]').forEach(b=>{ b.onclick = async ()=>{
@@ -4923,6 +4963,7 @@ function pushDeudaSnapshot(){
 // ---------- Configuración: todas las cargas masivas y la creación de proyectos en un solo lugar ----------
 function renderConfigTab(body){
   body.innerHTML = '<h3 class="section">Configuración</h3>';
+  if(!esMaster()){ body.innerHTML += notaSoloMaster('La configuración'); return; }
 
   const waDetails = document.createElement('details');
   waDetails.style.marginBottom = '12px';
