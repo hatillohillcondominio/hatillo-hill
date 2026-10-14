@@ -578,13 +578,35 @@ function puedeEditar(){
   return !!miPerfil && ['admin','junta','tesorero'].includes(miPerfil.rol);
 }
 
-// El administrador es el master: solo él hace lo masivo (abrir, emitir y cerrar
-// el mes, envíos a todos, importar) y la configuración. La base lo exige igual.
-function esMaster(){
-  return !!miPerfil && miPerfil.rol === 'admin';
+// Permisos por rol. El administrador (master) puede todo; la base exige lo mismo
+// (sql/12_master.sql y 13_permisos.sql) y estas funciones solo arreglan la pantalla.
+function tieneRol(...roles){
+  return !!miPerfil && roles.includes(miPerfil.rol);
 }
-function notaSoloMaster(que){
-  return '<div class="assumption" style="margin-top:6px;">🔒 ' + que + ' lo hace solo el administrador del sistema.</div>';
+function esMaster(){ return tieneRol('admin'); }
+// dinero del día a día: gastos, nómina, cargos, cobros, pagos, banco
+function puedeDinero(){ return tieneRol('admin','tesorero'); }
+// abrir, emitir y cerrar el mes
+function puedeCicloMes(){ return tieneRol('admin','tesorero'); }
+function puedeCorreoMasivo(){ return tieneRol('admin','tesorero','junta'); }
+function puedePresupuesto(){ return tieneRol('admin','junta'); }
+// datos bancarios del portal y plantillas de avisos
+function puedeAvisosBanco(){ return tieneRol('admin','junta'); }
+function puedeImportar(){ return tieneRol('admin','junta'); }
+// roles que cada uno puede dar al crear o cambiar un usuario
+function rolesAsignables(){
+  if(tieneRol('admin')) return ['vecino','junta','tesorero','admin'];
+  if(tieneRol('junta')) return ['vecino','junta','tesorero'];
+  if(tieneRol('tesorero')) return ['vecino'];
+  return [];
+}
+function notaSinPermiso(que, quien){
+  return '<div class="assumption" style="margin-top:6px;">🔒 ' + que + ' lo hace ' + (quien || 'el administrador o la tesorería') + '.</div>';
+}
+// deja una sección en solo lectura: esconde sus botones y bloquea los campos
+function soloLectura(el){
+  el.querySelectorAll('button').forEach(b=>{ b.style.display = 'none'; });
+  el.querySelectorAll('input, select, textarea').forEach(i=>{ i.disabled = true; });
 }
 
 function avisoBase(msg, esError){
@@ -608,12 +630,12 @@ function pintarSesion(){
     btn.style.background = '#b8862c';
     btn.title = 'Inicia sesión para ver los datos del condominio';
   }
-  // Configuración e importar respaldos: solo el administrador (master)
+  // Config (el admin la ve completa; tesorería y junta, solo los proyectos) e importar respaldos
   const cfgTab = document.querySelector('.stab[data-tab="config"]');
-  if(cfgTab) cfgTab.style.display = esMaster() ? '' : 'none';
+  if(cfgTab) cfgTab.style.display = puedeEditar() ? '' : 'none';
   const impBar = document.getElementById('importBackupBar');
-  if(impBar) impBar.style.display = esMaster() ? '' : 'none';
-  if(!esMaster() && currentTab === 'config'){ currentTab = 'lista'; renderSidebar(); }
+  if(impBar) impBar.style.display = puedeImportar() ? '' : 'none';
+  if(!puedeEditar() && currentTab === 'config'){ currentTab = 'lista'; renderSidebar(); }
 }
 
 function pantallaLogin(mostrar, mensaje){
@@ -1202,7 +1224,7 @@ async function importLocalBackup(){
     return;
   }
   const btn = document.getElementById('btnImportBackup');
-  if(!esMaster()){ alert('Importar un respaldo lo hace solo el administrador del sistema.'); return; }
+  if(!puedeImportar()){ alert('Importar un respaldo lo hace el administrador o la junta.'); return; }
   try{
     let perm = await localBackupDirHandle.queryPermission({mode:'read'});
     if(perm!=='granted') perm = await localBackupDirHandle.requestPermission({mode:'read'});
@@ -2564,6 +2586,7 @@ function renderNominaSeccion(body){
     if(error){ alert('No se pudo cerrar la nómina: ' + error.message); btnCerrar.disabled = false; return; }
     await refrescarCuentas();
   };
+  if(!puedeDinero()) soloLectura(det);
 }
 
 // ficha de cada empleado y sus conceptos fijos (lo que se copia a la nomina de cada mes)
@@ -2924,7 +2947,7 @@ function renderPresupuestoSeccion(body){
   body.appendChild(det);
   const cont = det.querySelector('#presuCuerpo');
 
-  if(presupuestoEditando && esMaster()){ pintarEdicionPresupuesto(cont); return; }
+  if(presupuestoEditando && puedePresupuesto()){ pintarEdicionPresupuesto(cont); return; }
 
   const selector = '<div class="presuVista">'
     + '<button data-presu-vista="anio" class="' + (vista==='anio' ? 'activo' : '') + '">📅 Año completo</button>'
@@ -2938,7 +2961,7 @@ function renderPresupuestoSeccion(body){
     const btnEd = cont.querySelector('#presuEditar');
     if(btnEd) btnEd.onclick = ()=>{ presupuestoEditando = true; renderSidebar(); };
   };
-  const botonEditar = esMaster() ? '<button class="chip" id="presuEditar" style="background:#a0522d;color:#fff;width:100%;margin-top:4px;">✏️ Editar partidas del presupuesto</button>' : '';
+  const botonEditar = puedePresupuesto() ? '<button class="chip" id="presuEditar" style="background:#a0522d;color:#fff;width:100%;margin-top:4px;">✏️ Editar partidas del presupuesto</button>' : '';
 
   if(vista === 'anio'){
     // ejecucion del año: lo gastado en cada partida contra su total anual
@@ -3375,11 +3398,11 @@ try{ adminSub = localStorage.getItem('hh_admin_sub') || 'gastos'; }catch(e){}
 function renderCuentasTab(body){
   renderCuentasCompleto(body);
   if(!puedeEditar()) return;
-  const esAdmin = miPerfil.rol === 'admin';
-  if(adminSub === 'usuarios' && !esAdmin) adminSub = 'gastos';
+  const verUsuarios = rolesAsignables().length > 0;
+  if(adminSub === 'usuarios' && !verUsuarios) adminSub = 'gastos';
   const bloqueReportados = renderReportadosSeccion(body);
   renderAvisosSeccion(body);
-  if(esAdmin) renderUsuariosSeccion(body);
+  if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Cuentas del mes': 'cabecera'};
   SUBMENU_ADMIN.forEach(([k, , , t])=>{ titulos[t] = k; });
@@ -3406,7 +3429,7 @@ function renderCuentasTab(body){
   if(bloqueReportados && primerCobro) body.insertBefore(bloqueReportados, primerCobro);
   const menu = document.createElement('div');
   menu.className = 'subMenu';
-  menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>k !== 'usuarios' || esAdmin).map(([k, etiqueta, color])=>
+  menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>k !== 'usuarios' || verUsuarios).map(([k, etiqueta, color])=>
     '<button style="--c:' + color + ';"' + (k===adminSub ? ' class="activo"' : '') + ' data-sub-ir="' + k + '">' + etiqueta
     + (k === 'cobros' && reportadosCache.length ? ' <span class="subBadge">' + reportadosCache.length + '</span>' : '') + '</button>').join('');
   body.insertBefore(menu, body.firstChild);
@@ -3441,13 +3464,13 @@ function renderCuentasCompleto(body){
     '<h3 class="section tituloCuenta" style="--c:#5b6472;margin-top:4px;"><span class="tcIcono">📅</span>Cuentas del mes</h3>'
     + (periodosCache.length
         ? '<div class="form-row"><label>Mes</label><select id="cuMes">'+opciones+'</select></div>'
-        : (esMaster() ? '<button class="btn primary" id="cuAbrirHoy" style="width:100%;margin:4px 0 8px;padding:12px;">'
+        : (puedeCicloMes() ? '<button class="btn primary" id="cuAbrirHoy" style="width:100%;margin:4px 0 8px;padding:12px;">'
           + '📅 Abrir el mes de ' + mesLegible(mesDeHoy()) + '</button>' : ''))
-    + (esMaster()
+    + (puedeCicloMes()
         ? '<div class="form-row"><label>' + (periodosCache.length ? 'Abrir un mes nuevo' : 'U otro mes') + '</label>'
           + '<input type="month" id="cuNuevoMes" value="'+mesParaAbrir()+'" style="max-width:150px;">'
           + '<button class="chip" id="cuAbrirMes" style="background:var(--accent);color:#fff;flex:0 0 auto;">📅 Abrir</button></div>'
-        : notaSoloMaster('Abrir un mes'));
+        : notaSinPermiso('Abrir un mes'));
   body.appendChild(cab);
 
   const btnHoy = document.getElementById('cuAbrirHoy');
@@ -3499,7 +3522,7 @@ function renderCuentasCompleto(body){
     secG.innerHTML += '<div class="assumption">Este mes ya se emitió, así que sus gastos quedaron fijos. '
       + (hayAbierto ? 'Los gastos nuevos se cargan en el mes abierto: elígelo arriba en <b>Mes</b>.'
                     : 'Los gastos nuevos van en el mes siguiente.') + '</div>'
-      + (hayAbierto ? '' : !esMaster() ? notaSoloMaster('Abrir el mes siguiente')
+      + (hayAbierto ? '' : !puedeCicloMes() ? notaSinPermiso('Abrir el mes siguiente')
                     : '<button class="btn primary" id="cuAbrirSiguiente" style="width:100%;padding:12px;margin-top:4px;">'
                           + '📅 Abrir ' + mesLegible(mesParaAbrir()) + ' para cargar gastos</button>');
   }
@@ -3592,8 +3615,8 @@ function renderCuentasCompleto(body){
   secR.style.marginTop = '16px';
   secR.innerHTML = '<h3 class="section tituloCuenta" style="--c:#3b78b5;"><span class="tcIcono">📨</span>Recibos</h3>';
   const presuMes = presupuestoCache && (()=>{ const i = indiceMesPresupuesto(presupuestoCache, mesActual); return i >= 0 && i <= 11; })();
-  if(per.estado === 'abierto' && !esMaster()){
-    secR.innerHTML += notaSoloMaster('Emitir los recibos del mes (o cerrarlo como mes de la administradora anterior)');
+  if(per.estado === 'abierto' && !puedeCicloMes()){
+    secR.innerHTML += notaSinPermiso('Emitir los recibos del mes (o cerrarlo como mes de la administradora anterior)');
   } else if(per.estado === 'abierto'){
     const cuotaMes = presuMes ? cuotaPresupuesto(presupuestoCache) : 0;
     secR.innerHTML += (prorrateable > 0 || presuMes)
@@ -3619,7 +3642,7 @@ function renderCuentasCompleto(body){
       + '<div id="cuResumenRecibos" class="empty">Cargando…</div><div id="cuListaRecibos"></div>';
   } else {
     secR.innerHTML += '<div id="cuResumenRecibos" class="empty">Cargando…</div><div id="cuListaRecibos"></div>'
-      + (cerrado ? '' : !esMaster() ? notaSoloMaster('Cerrar el mes')
+      + (cerrado ? '' : !puedeCicloMes() ? notaSinPermiso('Cerrar el mes')
                   : '<button class="chip" id="cuCerrar" style="background:var(--brown);color:#fff;width:100%;margin-top:8px;">🔒 Cerrar el mes</button>');
   }
   body.appendChild(secR);
@@ -3875,8 +3898,8 @@ function renderAvisosSeccion(body){
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
       + '<button class="chip" id="avWhats" style="background:var(--green);color:#fff;flex:1 1 100%;">📲 Abrir WhatsApp para enviar a la Comunidad</button>'
       + '<button class="chip" id="avCopiar" style="background:var(--panel2);flex:1;">📋 Copiar</button>'
-      + (esMaster() ? '<button class="chip" id="avCorreoTodos" style="background:var(--panel2);flex:1;">📧 Enviar también por correo</button>' : '')
-      + (miPerfil.rol === 'admin' ? '<button class="chip" id="avGuardar" style="background:var(--panel2);flex:1;">💾 Guardar plantilla</button>' : '')
+      + (puedeCorreoMasivo() ? '<button class="chip" id="avCorreoTodos" style="background:var(--panel2);flex:1;">📧 Enviar también por correo</button>' : '')
+      + (puedeAvisosBanco() ? '<button class="chip" id="avGuardar" style="background:var(--panel2);flex:1;">💾 Guardar plantilla</button>' : '')
     + '</div>'
     + '<div class="assumption">WhatsApp se abre con el mensaje listo: elige la Comunidad (o su grupo de avisos) y pulsa enviar.</div>'
 
@@ -3992,11 +4015,11 @@ function renderAvisosSeccion(body){
     host.innerHTML = '<div style="font-size:12.5px;line-height:1.6;">'
       + '<b>' + filas.length + '</b> recibos · <b>' + conCorreo.length + '</b> con correo · <b>' + (conCorreo.length - pendientes.length) + '</b> ya avisados'
       + (sinCorreo.length ? '<br><span style="color:var(--sub);">Sin correo: ' + sinCorreo.join(', ') + '</span>' : '') + '</div>'
-      + (!esMaster() ? notaSoloMaster('El envío de los recibos por correo a los propietarios') :
+      + (!puedeCorreoMasivo() ? notaSinPermiso('El envío de los recibos por correo a los propietarios', 'el administrador, la tesorería o la junta') :
         '<div style="display:flex;gap:6px;margin-top:6px;">'
       + '<button class="chip" id="avRecPend" style="background:var(--accent);color:#fff;flex:1;"' + (pendientes.length ? '' : ' disabled') + '>📧 Enviar a los no avisados (' + pendientes.length + ')</button>'
       + '<button class="chip" id="avRecTodos" style="background:var(--panel2);flex:1;"' + (conCorreo.length ? '' : ' disabled') + '>Reenviar a todos (' + conCorreo.length + ')</button></div>');
-    if(!esMaster()) return;
+    if(!puedeCorreoMasivo()) return;
     const enviar = async (lista, b)=>{
       if(!lista.length) return;
       if(!confirm('Se enviará el recibo de ' + mesLegible(selMes.value) + ' por correo a ' + lista.length + ' propietarios. ¿Enviar?')) return;
@@ -4077,6 +4100,10 @@ async function llamarUsuarios(cuerpo){
 }
 
 function renderUsuariosSeccion(body){
+  const asignables = rolesAsignables();
+  const nombresRol = {vecino:'Vecino (portal)', junta:'Junta', tesorero:'Tesorero', admin:'Administrador', mantenimiento:'Mantenimiento (respaldo)'};
+  const opcionesRol = asignables.concat(asignables.includes('admin') ? ['mantenimiento'] : [])
+    .map(r=>'<option value="' + r + '">' + nombresRol[r] + '</option>').join('');
   const sec = document.createElement('div');
   sec.style.marginTop = '4px';
   const opcionesApt = apartments.slice().sort((a,b)=>a.id.localeCompare(b.id))
@@ -4084,7 +4111,7 @@ function renderUsuariosSeccion(body){
   sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#5b6472;"><span class="tcIcono">🔐</span>Usuarios del sistema</h3>'
     + '<div class="assumption" style="margin-top:0;">Los vecinos entran por el portal (' + escHtml(urlPortal()) + '): ven solo su apartamento y reportan sus pagos.</div>'
     + '<details id="usNuevoBox"><summary style="cursor:pointer;font-weight:700;margin:10px 0 6px;">➕ Crear un usuario</summary>'
-    + '<div class="form-row"><label>Rol</label><select id="usRol"><option value="vecino">Vecino (portal)</option><option value="junta">Junta</option><option value="tesorero">Tesorero</option><option value="admin">Administrador</option><option value="mantenimiento">Mantenimiento (respaldo)</option></select></div>'
+    + '<div class="form-row"><label>Rol</label><select id="usRol">' + opcionesRol + '</select></div>'
     + '<div class="assumption" id="usNotaMant" style="display:none;margin-top:0;">Cuenta de reserva con acceso total, para entrar si falla la cuenta principal o se pierde su clave. Usa un correo distinto del principal y guarda la clave en un lugar seguro.</div>'
     + '<div class="form-row" id="usAptFila"><label>Apartamento</label><select id="usApt"><option value="">— elegir —</option>' + opcionesApt + '</select></div>'
     + '<div class="form-row"><label>Nombre</label><input type="text" id="usNombre"></div>'
@@ -4093,17 +4120,18 @@ function renderUsuariosSeccion(body){
     + '<button class="chip" id="usCrear" style="background:var(--accent);color:#fff;width:100%;margin-top:6px;">➕ Crear usuario</button>'
     + '<div class="assumption">La clave queda fija: el vecino no la cambia, así la Junta siempre puede recordársela. Después de crearlo puedes mandarle el acceso por WhatsApp.</div>'
     + '<div id="usResultado"></div></details>'
-    + '<details><summary style="cursor:pointer;font-weight:700;margin:10px 0 6px;">🏦 Datos para pagar que ve el vecino</summary>'
+    + (!puedeAvisosBanco() ? '' : '<details><summary style="cursor:pointer;font-weight:700;margin:10px 0 6px;">🏦 Datos para pagar que ve el vecino</summary>'
     + '<textarea id="usDatosPago" style="width:100%;min-height:90px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px;font-size:12.5px;" placeholder="Banco, cuenta, RIF, pago móvil…">Cargando…</textarea>'
     + '<button class="chip" id="usGuardarDatos" style="background:var(--accent);color:#fff;width:100%;margin-top:6px;">Guardar</button>'
-    + '<div class="assumption">Aparece en el portal arriba del botón “Reportar un pago”. Vacío, no se muestra.</div></details>'
+    + '<div class="assumption">Aparece en el portal arriba del botón “Reportar un pago”. Vacío, no se muestra.</div></details>')
     + '<div id="usLista"><div class="empty" style="padding:10px;">Cargando usuarios…</div></div>';
   body.appendChild(sec);
 
   const txtDatos = sec.querySelector('#usDatosPago');
-  db.from('configuracion').select('valor').eq('clave', 'datos_pago_portal').maybeSingle()
+  if(txtDatos) db.from('configuracion').select('valor').eq('clave', 'datos_pago_portal').maybeSingle()
     .then(({data})=>{ txtDatos.value = data ? (data.valor || '') : ''; });
-  sec.querySelector('#usGuardarDatos').onclick = async e=>{
+  const btnDatos = sec.querySelector('#usGuardarDatos');
+  if(btnDatos) btnDatos.onclick = async e=>{
     const { error } = await db.from('configuracion').upsert({clave: 'datos_pago_portal', valor: txtDatos.value.trim()});
     if(error){ alert('No se pudo guardar: ' + error.message); return; }
     e.target.textContent = '✓ Guardado';
@@ -4176,10 +4204,10 @@ function renderUsuariosSeccion(body){
           + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + escHtml(p.nombre || '') + '</span>'
           + '<span style="font-size:11px;font-weight:700;color:' + (p.activo ? 'var(--green)' : 'var(--red)') + ';">' + (p.activo ? 'activo' : 'inactivo') + '</span></div>'
           + '<div style="font-size:12px;color:var(--sub);">' + escHtml(p.correo) + ' · ' + escHtml(etiquetas[p.rol] || p.rol) + '</div>'
-          + (p.id === miPerfil.id || p.rol === 'vecino' ? '' : '<div class="form-row" style="margin:0;"><label>Rol</label><select data-us-rol="' + p.id + '">'
-            + ['admin','tesorero','junta'].map(r=>'<option value="' + r + '"' + (r === p.rol ? ' selected' : '') + '>' + etiquetas[r] + '</option>').join('')
+          + (p.id === miPerfil.id || p.rol === 'vecino' || !asignables.includes(p.rol) ? '' : '<div class="form-row" style="margin:0;"><label>Rol</label><select data-us-rol="' + p.id + '">'
+            + ['admin','tesorero','junta'].filter(r=>asignables.includes(r)).map(r=>'<option value="' + r + '"' + (r === p.rol ? ' selected' : '') + '>' + etiquetas[r] + '</option>').join('')
             + '</select></div>')
-          + (p.id === miPerfil.id ? '' : '<div style="display:flex;gap:6px;">'
+          + (p.id === miPerfil.id || !asignables.includes(p.rol) ? '' : '<div style="display:flex;gap:6px;">'
             + '<button class="chip" data-us-clave="' + p.id + '" style="background:var(--panel2);flex:1;">🔑 Nueva clave</button>'
             + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>')
           + '<div data-us-res="' + p.id + '"></div></div>').join('');
@@ -4565,7 +4593,7 @@ function pintarCargosPendientes(apt){
       host.innerHTML = data.map(c=>
         '<div class="comp-item"><span class="t">' + esc(c.concepto) + ' <span style="color:var(--sub);">· próximo recibo</span></span>'
         + '<span style="color:var(--amber);">' + fmtMoney(Number(c.monto))
-        + (puedeEditar() ? ' <button class="accionBtn" data-quitar-cargo="' + c.id + '" title="Quitar este cargo">✕</button>' : '')
+        + (puedeDinero() ? ' <button class="accionBtn" data-quitar-cargo="' + c.id + '" title="Quitar este cargo">✕</button>' : '')
         + '</span></div>').join('');
       host.querySelectorAll('[data-quitar-cargo]').forEach(b=>{
         b.onclick = async ()=>{
@@ -4628,7 +4656,7 @@ function renderFichaCobrar(pane){
   const pd = proyectoDeudas(apt.id);
   const tieneTel = getContactOptions(apt).length > 0;
   pane.innerHTML =
-    (puedeEditar()
+    (puedeDinero()
       ? '<h3 class="section">Cargo extra al próximo recibo</h3>'
         + '<div class="form-row"><label>Concepto</label><input type="text" id="fcaConcepto" placeholder="Ej. Control extra del portón, reparación de…"></div>'
         + '<div class="form-row two">'
@@ -4963,7 +4991,7 @@ function pushDeudaSnapshot(){
 // ---------- Configuración: todas las cargas masivas y la creación de proyectos en un solo lugar ----------
 function renderConfigTab(body){
   body.innerHTML = '<h3 class="section">Configuración</h3>';
-  if(!esMaster()){ body.innerHTML += notaSoloMaster('La configuración'); return; }
+  if(!puedeEditar()) return;
 
   const waDetails = document.createElement('details');
   waDetails.style.marginBottom = '12px';
@@ -5156,6 +5184,13 @@ function renderConfigTab(body){
     flag.textContent = '✓ '+matched+' apartamento(s) actualizado(s)'+(sinMatch.length? ' · sin coincidencia: '+sinMatch.join(', ') : '');
     document.getElementById('telefonosPaste').value = '';
   };
+
+  // tesorería y junta solo crean proyectos; lo demás (WhatsApp, cargas en lote,
+  // importar deuda, medios de pago) es del administrador
+  if(!esMaster()){
+    [waDetails, shellyDetails, deudaDetails, fpDetails].forEach(d=>d.remove());
+    body.insertAdjacentHTML('beforeend', notaSinPermiso('El resto de la configuración', 'solo el administrador del sistema'));
+  }
 }
 
 // ---------- Reglamento (buscador de artículos y faltas) ----------
