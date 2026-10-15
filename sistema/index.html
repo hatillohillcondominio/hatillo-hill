@@ -3,11 +3,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HH Control</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js" integrity="sha384-CI3ELBVUz9XQO+97x6nwMDPosPR5XvsxW2ua7N1Xeygeh1IxtgqtCkGfQY9WWdHu" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js" integrity="sha384-fljlqkjWlmSFjkESkQvm77heIZpoWmXEOzlCA7kOpGUH+95Zk0yGfQieWM2q136E" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js" integrity="sha384-0w2KAL2YHP6wKOkUDzkCDGgVvfmHnj02DHeQ6XcHOgTfFsGyonKOpShMH1x6nk9o" crossorigin="anonymous"></script>
 <style>
   :root{
     /* paleta "Mármol y luz" — macOS claro, cálido, acento dorado institucional */
@@ -592,7 +592,7 @@ function puedeImportar(){ return tieneRol('admin','junta'); }
 // roles que cada uno puede dar al crear o cambiar un usuario
 function rolesAsignables(){
   if(tieneRol('admin')) return ['vecino','junta','tesorero','admin'];
-  if(tieneRol('junta')) return ['vecino','junta','tesorero'];
+  if(tieneRol('junta')) return ['vecino'];
   if(tieneRol('tesorero')) return ['vecino'];
   return [];
 }
@@ -2041,9 +2041,8 @@ function focusSotano(s){
 }
 
 // ---------- sidebar rendering ----------
-function esc(s){ return (s===null||s===undefined) ? '' : String(s); }
-// escape de verdad para lo que escribe un vecino desde el portal (va a innerHTML)
-function escHtml(s){ return esc(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// escapa HTML: todo lo que pasa por aqui termina en innerHTML
+function esc(s){ return (s===null||s===undefined) ? '' : String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ---------- Banco: concilia, no registra ----------
 // Los ingresos ya estan en Pagos y los egresos en Gastos. Anotarlos otra vez
@@ -3362,7 +3361,9 @@ const SUBMENU_ADMIN = [
   ['recibos',     '📨 Recibos',     '#3b78b5', 'Recibos'],
   ['cobros',      '💵 Cobros',      '#4f8f6a', 'Registrar un cobro'],
   ['pagos',       '💸 Pagos',       '#d35400', 'Pagos a proveedores'],
+  ['proveedores', '🏪 Proveedores', '#8a6d3b', 'Proveedores'],
   ['banco',       '🏦 Banco',       '#2f8a8a', 'Banco'],
+  ['inventario',  '📦 Inventario',  '#6b7f3a', 'Inventario'],
   ['avisos',      '📣 Avisos',      '#c9772f', 'Avisos a los propietarios'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
   ['usuarios',    '🔐 Usuarios',    '#5b6472', 'Usuarios del sistema']
@@ -3378,6 +3379,9 @@ function renderCuentasTab(body){
   const bloqueReportados = renderReportadosSeccion(body);
   renderAvisosSeccion(body);
   renderExportarSeccion(body);
+  // estas dos leen de la base al pintarse: solo cuando se abren
+  if(adminSub === 'proveedores') renderProveedoresSeccion(body);
+  if(adminSub === 'inventario') renderInventarioSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Cuentas del mes': 'cabecera'};
@@ -3495,7 +3499,7 @@ function renderCuentasCompleto(body){
       + '<div class="form-row"><label>Categoría</label><select id="gCat">'
         + categoriasCache.map(c=>'<option value="'+c.id+'">'+esc(c.nombre)+'</option>').join('') + '</select></div>'
       + '<div class="form-row"><label>Concepto</label><input type="text" id="gDesc" placeholder="Ej. Recibo de electricidad"></div>'
-      + '<div class="form-row"><label>Proveedor</label><input type="text" id="gProv" placeholder="Opcional"></div>'
+      + '<div class="form-row"><label>Proveedor</label><input type="text" id="gProv" list="dlProveedores" placeholder="Opcional"><datalist id="dlProveedores"></datalist></div>'
       + '<div class="form-row"><label title="Usa un monto negativo para devoluciones o reintegros">Monto (negativo si es devolución)</label><input type="number" id="gMonto" step="0.01" placeholder="0.00"></div>'
       + '<div class="form-row"><label title="Desmárcalo si este gasto sale del fondo de reserva o de un proyecto: entonces no se le cobra otra vez al vecino">Se reparte a los vecinos</label>'
         + '<input type="checkbox" id="gProrr" checked style="width:auto;"></div>'
@@ -3547,6 +3551,7 @@ function renderCuentasCompleto(body){
     : '<div class="empty">Sin gastos cargados en este mes.</div>';
   body.appendChild(lista);
 
+  if(document.getElementById('gProv')) cargarNombresProveedores();
   const btnAdd = document.getElementById('gAgregar');
   if(btnAdd) btnAdd.onclick = async ()=>{
     const desc = document.getElementById('gDesc').value.trim();
@@ -3560,6 +3565,7 @@ function renderCuentasCompleto(body){
       categoria_id: document.getElementById('gCat').value,
       descripcion: desc,
       proveedor: prov,
+      proveedor_id: await fichaProveedor(prov),
       monto: monto,
       prorrateable: document.getElementById('gProrr').checked,
       registrado_por: miPerfil.id
@@ -4438,26 +4444,72 @@ async function xlsPagosRealizados(desde, hasta){
 }
 
 async function xlsProveedores(){
-  const {gastos, cat, pagadoGasto} = await xlsGastosBase();
+  const [{gastos, cat, pagadoGasto}, fichas] = await Promise.all([xlsGastosBase(), xlsTraer('proveedores', '*', 'nombre')]);
   const prov = {};
-  gastos.filter(g=>(g.proveedor || '').trim() && g.origen !== 'nomina').forEach(g=>{
-    const nombre = g.proveedor.trim().replace(/\s+/g, ' ');
-    const k = normalizeSearch(nombre);
-    const p = prov[k] = prov[k] || {nombre, n: 0, total: 0, pagado: 0, primera: g.fecha, ultima: g.fecha, cats: new Set(), facturas: []};
+  const nuevo = (nombre, f)=>({nombre, f: f || {}, n: 0, total: 0, pagado: 0, primera: '', ultima: '', cats: new Set(), facturas: []});
+  fichas.forEach(f=>{ prov['id:' + f.id] = nuevo(f.nombre, f); });
+  const porNombre = {};
+  fichas.forEach(f=>{ porNombre[normalizeSearch(f.nombre)] = 'id:' + f.id; });
+  gastos.filter(g=>g.origen !== 'nomina' && (g.proveedor_id || (g.proveedor || '').trim())).forEach(g=>{
+    const nombre = (g.proveedor || '').trim().replace(/\s+/g, ' ');
+    const k = g.proveedor_id ? 'id:' + g.proveedor_id : (porNombre[normalizeSearch(nombre)] || 'n:' + normalizeSearch(nombre));
+    const p = prov[k] = prov[k] || nuevo(nombre);
     p.n++;
     p.total += Number(g.monto);
     p.pagado += pagadoGasto[g.id] || 0;
-    if(g.fecha < p.primera) p.primera = g.fecha;
-    if(g.fecha > p.ultima) p.ultima = g.fecha;
+    if(!p.primera || g.fecha < p.primera) p.primera = g.fecha;
+    if(!p.ultima || g.fecha > p.ultima) p.ultima = g.fecha;
     if(cat[g.categoria_id]) p.cats.add(cat[g.categoria_id]);
     if(g.documento) p.facturas.push(g.documento);
   });
-  const filas = Object.values(prov).sort((x, y)=>y.total - x.total).map(p=>({
-    'Proveedor': p.nombre, 'Categorías': Array.from(p.cats).join(', '), 'Nº de gastos': p.n,
+  const filas = Object.values(prov).sort((x, y)=>y.total - x.total || x.nombre.localeCompare(y.nombre)).map(p=>({
+    'Proveedor': p.nombre, 'RIF': p.f.rif || '', 'Teléfono': p.f.telefono || '', 'Correo': p.f.correo || '',
+    'Contacto': p.f.contacto || '', 'Rubro': p.f.rubro || '', 'Dirección': p.f.direccion || '',
+    'Ficha': p.f.id ? (p.f.activo ? 'Activa' : 'Inactiva') : 'Sin ficha', 'Categorías': Array.from(p.cats).join(', '), 'Nº de gastos': p.n,
     'Total facturado $': xlsNum(p.total), 'Total pagado $': xlsNum(p.pagado), 'Por pagar $': xlsNum(Math.max(0, p.total - p.pagado)),
-    'Primera compra': xlsFecha(p.primera), 'Última compra': xlsFecha(p.ultima), 'Facturas': p.facturas.join(', ')
+    'Primera compra': xlsFecha(p.primera), 'Última compra': xlsFecha(p.ultima), 'Facturas': p.facturas.join(', '), 'Nota': p.f.nota || ''
   }));
   return [['Proveedores', filas]];
+}
+
+async function xlsInventario(desde, hasta){
+  const [prods, movs, sols, items, provs, perfs] = await Promise.all([
+    xlsTraer('v_inventario', '*', 'nombre'), xlsTraer('inventario_movimientos', '*', 'numero'),
+    xlsTraer('solicitudes_material', '*', 'numero'), xlsTraer('solicitud_items', '*'),
+    xlsTraer('proveedores', 'id, nombre'), xlsTraer('perfiles', 'id, nombre, correo')
+  ]);
+  const P = {}, PV = {}, PF = {}, S = {};
+  prods.forEach(p=>{ P[p.id] = p; });
+  provs.forEach(p=>{ PV[p.id] = p.nombre; });
+  perfs.forEach(p=>{ PF[p.id] = p.nombre || p.correo; });
+  sols.forEach(s=>{ S[s.id] = s; });
+  const tipo = {entrada: 'Entrada', salida: 'Salida', ajuste_mas: 'Ajuste (+)', ajuste_menos: 'Ajuste (−)'};
+  const existencias = prods.map(p=>({
+    'Código': p.codigo || '', 'Producto': p.nombre, 'Categoría': p.categoria || '', 'Unidad': p.unidad,
+    'Existencia': Number(p.existencia), 'Mínimo': Number(p.stock_minimo),
+    'Bajo el mínimo': Number(p.stock_minimo) > 0 && Number(p.existencia) <= Number(p.stock_minimo) ? 'Sí' : '',
+    'Dónde se guarda': p.ubicacion || '', 'Activo': xlsSiNo(p.activo), 'Último movimiento': xlsFecha(p.ultimo_movimiento), 'Nota': p.nota || ''
+  }));
+  const movimientos = movs.filter(m=>xlsEnRango(m.fecha, desde, hasta)).map(m=>{
+    const p = P[m.producto_id] || {};
+    const sale = m.tipo === 'salida' || m.tipo === 'ajuste_menos';
+    return {'Nº': m.numero, 'Fecha': xlsFecha(m.fecha), 'Tipo': tipo[m.tipo] || m.tipo, 'Producto': p.nombre || '', 'Unidad': p.unidad || '',
+      'Cantidad': (sale ? -1 : 1) * Number(m.cantidad), 'Proveedor': PV[m.proveedor_id] || '', 'Factura / nota': m.documento || '',
+      'Costo unitario $': xlsNum(m.costo_unitario), 'Solicitud': m.solicitud_id && S[m.solicitud_id] ? numSolicitud(S[m.solicitud_id].numero) : '',
+      'Dónde se usó': m.destino || '', 'Recibió': m.recibido_por || '', 'Nota': m.nota || '',
+      'Registró': PF[m.registrado_por] || '', 'Registrado el': xlsFecha(m.creado_en)};
+  });
+  const solicitudes = [];
+  sols.filter(s=>xlsEnRango(s.fecha, desde, hasta)).forEach(s=>{
+    items.filter(i=>i.solicitud_id === s.id).forEach(i=>{
+      const p = P[i.producto_id] || {};
+      solicitudes.push({'Solicitud': numSolicitud(s.numero), 'Fecha': xlsFecha(s.fecha), 'Solicitante': s.solicitante, 'Dónde se usará': s.area || '',
+        'Para qué': s.motivo || '', 'Estado': (SOL_ESTADO[s.estado] || [s.estado])[0], 'Producto': p.nombre || '', 'Unidad': p.unidad || '',
+        'Solicitado': Number(i.cantidad), 'Entregado': Number(i.entregado), 'Registró': PF[s.creado_por] || '',
+        'Resolvió': PF[s.resuelto_por] || '', 'Resuelto el': xlsFecha(s.resuelto_en), 'Nota': s.nota_resolucion || ''});
+    });
+  });
+  return [['Existencias', existencias], ['Movimientos inventario', movimientos], ['Solicitudes de material', solicitudes]];
 }
 
 // [clave, etiqueta, descripcion, funcion, se filtra por fechas]
@@ -4467,7 +4519,8 @@ const XLS_REPORTES = [
   ['proyectos', '💧 Deuda de proyectos', 'Quién debe en cada proyecto (Pozo de Agua y otros), con contactos, y el resumen de cada proyecto.', xlsDeudaProyectos, false],
   ['cobros', '💵 Historial de cobros', 'Todo lo recibido: pagos del condominio y abonos a proyectos.', xlsCobros, true],
   ['egresos', '💸 Historial de pagos realizados', 'Pagos a proveedores, nómina y aportes, y los gastos registrados con lo que falta por pagar.', xlsPagosRealizados, true],
-  ['proveedores', '🏪 Proveedores', 'Cada proveedor con sus categorías, totales facturados y pagados, y sus facturas.', xlsProveedores, false]
+  ['proveedores', '🏪 Proveedores', 'Ficha de cada proveedor (RIF, teléfono, correo, contacto) con lo facturado, lo pagado y sus facturas.', xlsProveedores, false],
+  ['inventario', '📦 Inventario', 'Existencias, todos los movimientos numerados y las solicitudes de material.', xlsInventario, true]
 ];
 async function exportarExcel(claves, desde, hasta, archivo){
   const wb = XLSX.utils.book_new();
@@ -4524,6 +4577,514 @@ function renderExportarSeccion(body){
   sec.querySelector('#xlsTodo').onclick = e=>correr(XLS_REPORTES.map(r=>r[0]), 'reporte_completo', e.currentTarget);
 }
 
+
+// ---------- Proveedores e inventario de materiales ----------
+// La tesorería (y el admin) registra; la junta solo ve. En la base los
+// movimientos no se editan ni se borran: un error se corrige con un ajuste.
+function hoyLocal(){ return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+function fmtCant(n){ return (Number(n) || 0).toLocaleString('es-VE', {maximumFractionDigits: 3}); }
+function fmtFechaCorta(s){ return s ? new Date(String(s).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-VE', {day: '2-digit', month: '2-digit', year: 'numeric'}) : ''; }
+function numSolicitud(n){ return 'SM-' + String(n).padStart(4, '0'); }
+
+const UNIDADES = ['unidad', 'par', 'juego', 'caja', 'paquete', 'bolsa', 'saco', 'rollo', 'pliego', 'kg', 'g', 'litro', 'ml', 'galón',
+  'cuñete', 'tambor', 'metro', 'm²', 'm³', 'pie', 'pulgada'];
+
+// buscar o crear la ficha de un proveedor por su nombre (se usa al cargar un gasto)
+async function fichaProveedor(nombre){
+  nombre = (nombre || '').trim().replace(/\s+/g, ' ');
+  if(!nombre) return null;
+  const r = await db.from('proveedores').select('id, nombre');
+  if(r.error) return null;
+  const k = normalizeSearch(nombre);
+  const hay = (r.data || []).find(p=>normalizeSearch(p.nombre) === k);
+  if(hay) return hay.id;
+  const n = await db.from('proveedores').insert({nombre}).select('id').single();
+  return n.error ? null : n.data.id;
+}
+let proveedoresNombres = [];
+async function cargarNombresProveedores(){
+  const r = await db.from('proveedores').select('nombre, activo').order('nombre');
+  proveedoresNombres = (r.data || []).filter(p=>p.activo).map(p=>p.nombre);
+  const dl = document.getElementById('dlProveedores');
+  if(dl) dl.innerHTML = proveedoresNombres.map(n=>'<option value="' + escHtml(n) + '">').join('');
+}
+
+// ===== Proveedores =====
+function renderProveedoresSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  const edita = puedeDinero();
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#8a6d3b;"><span class="tcIcono">🏪</span>Proveedores</h3>'
+    + (edita ? '' : notaSinPermiso('Crear o cambiar fichas de proveedores'))
+    + (edita ? '<details id="pvForm"><summary style="cursor:pointer;font-weight:700;padding:6px 0;">➕ <span id="pvFormTit">Nuevo proveedor</span></summary>'
+      + '<input type="hidden" id="pvId">'
+      + '<div class="form-row"><label>Nombre o razón social *</label><input type="text" id="pvNombre"></div>'
+      + '<div class="form-row"><label>RIF</label><input type="text" id="pvRif" placeholder="J-12345678-9"></div>'
+      + '<div class="form-row"><label>Teléfono</label><input type="tel" id="pvTel" placeholder="0414-1234567"></div>'
+      + '<div class="form-row"><label>Correo</label><input type="email" id="pvCorreo"></div>'
+      + '<div class="form-row"><label>Persona de contacto</label><input type="text" id="pvContacto"></div>'
+      + '<div class="form-row"><label>Rubro</label><input type="text" id="pvRubro" placeholder="Ej. Ferretería, Ascensores"></div>'
+      + '<div class="form-row"><label>Dirección</label><input type="text" id="pvDir"></div>'
+      + '<div class="form-row"><label>Nota</label><input type="text" id="pvNota"></div>'
+      + '<div style="display:flex;gap:6px;margin:6px 0 10px;"><button class="btn primary" id="pvGuardar" style="flex:1;">💾 Guardar</button>'
+      + '<button class="btn ghost" id="pvLimpiar" style="flex:0 0 auto;">Limpiar</button></div></details>' : '')
+    + '<input class="searchbox" id="pvBuscar" placeholder="Buscar por nombre, RIF o rubro…">'
+    + '<div id="pvLista"><div class="empty">Cargando…</div></div>';
+  body.appendChild(sec);
+  let fichas = [], compras = {};
+  const pintar = ()=>{
+    const n = normalizeSearch(sec.querySelector('#pvBuscar').value || '');
+    const vis = fichas.filter(p=>!n || normalizeSearch([p.nombre, p.rif, p.rubro, p.contacto].join(' ')).includes(n));
+    sec.querySelector('#pvLista').innerHTML = vis.length ? vis.map(p=>{
+      const c = compras[p.id] || {n: 0, total: 0};
+      const tel = toWhatsAppNumber(p.telefono || '');
+      return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:3px;' + (p.activo ? '' : 'opacity:.55;') + '">'
+        + '<div style="display:flex;justify-content:space-between;gap:6px;"><b>' + escHtml(p.nombre) + (p.activo ? '' : ' <span style="font-size:11px;color:var(--sub);">(inactivo)</span>') + '</b>'
+        + '<span style="font-size:11.5px;color:var(--sub);white-space:nowrap;">' + c.n + ' gasto(s) · ' + fmtMoney(c.total) + '</span></div>'
+        + '<div style="font-size:11.5px;color:var(--sub);">'
+          + [p.rif ? 'RIF ' + escHtml(p.rif) : 'Sin RIF', p.rubro ? escHtml(p.rubro) : '', p.contacto ? 'Contacto: ' + escHtml(p.contacto) : ''].filter(Boolean).join(' · ')
+          + (p.telefono ? '<br>📞 ' + escHtml(p.telefono) : '') + (p.correo ? ' · ✉️ ' + escHtml(p.correo) : '')
+          + (p.direccion ? '<br>📍 ' + escHtml(p.direccion) : '') + (p.nota ? '<br>📝 ' + escHtml(p.nota) : '') + '</div>'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+          + (tel ? '<a class="chip" href="https://wa.me/' + tel + '" target="_blank" rel="noopener" style="background:var(--green);color:#fff;text-decoration:none;">📲 WhatsApp</a>' : '')
+          + (edita ? '<button class="chip" data-pv-editar="' + p.id + '" style="background:var(--panel2);">✏️ Editar</button>'
+            + '<button class="chip" data-pv-activo="' + p.id + '" style="background:var(--panel2);">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button>' : '')
+        + '</div></div>';
+    }).join('') : '<div class="empty">' + (fichas.length ? 'Sin coincidencias.' : 'Todavía no hay proveedores.') + '</div>';
+    sec.querySelectorAll('[data-pv-editar]').forEach(b=>{ b.onclick = ()=>{
+      const p = fichas.find(x=>x.id === b.dataset.pvEditar);
+      sec.querySelector('#pvId').value = p.id;
+      [['pvNombre', 'nombre'], ['pvRif', 'rif'], ['pvTel', 'telefono'], ['pvCorreo', 'correo'], ['pvContacto', 'contacto'],
+       ['pvRubro', 'rubro'], ['pvDir', 'direccion'], ['pvNota', 'nota']].forEach(([id, k])=>{ sec.querySelector('#' + id).value = p[k] || ''; });
+      sec.querySelector('#pvFormTit').textContent = 'Editar ' + p.nombre;
+      sec.querySelector('#pvForm').open = true;
+      sec.querySelector('#pvForm').scrollIntoView({block: 'start'});
+    }; });
+    sec.querySelectorAll('[data-pv-activo]').forEach(b=>{ b.onclick = async ()=>{
+      const p = fichas.find(x=>x.id === b.dataset.pvActivo);
+      const r = await db.from('proveedores').update({activo: !p.activo}).eq('id', p.id);
+      if(r.error){ alert('No se pudo cambiar: ' + r.error.message); return; }
+      p.activo = !p.activo;
+      pintar();
+    }; });
+  };
+  const cargar = async ()=>{
+    const [pv, gs] = await Promise.all([
+      db.from('proveedores').select('*').order('nombre'),
+      db.from('gastos').select('proveedor_id, monto').not('proveedor_id', 'is', null)
+    ]);
+    if(pv.error){ sec.querySelector('#pvLista').innerHTML = '<div class="empty">No se pudieron leer los proveedores: ' + escHtml(pv.error.message) + '</div>'; return; }
+    fichas = pv.data || [];
+    compras = {};
+    (gs.data || []).forEach(g=>{ const c = compras[g.proveedor_id] = compras[g.proveedor_id] || {n: 0, total: 0}; c.n++; c.total += Number(g.monto) || 0; });
+    pintar();
+  };
+  sec.querySelector('#pvBuscar').oninput = pintar;
+  if(edita){
+    const limpiar = ()=>{
+      sec.querySelectorAll('#pvForm input').forEach(i=>{ i.value = ''; });
+      sec.querySelector('#pvFormTit').textContent = 'Nuevo proveedor';
+    };
+    sec.querySelector('#pvLimpiar').onclick = limpiar;
+    sec.querySelector('#pvGuardar').onclick = async e=>{
+      const v = id=>sec.querySelector('#' + id).value.trim() || null;
+      const fila = {nombre: v('pvNombre'), rif: v('pvRif') ? v('pvRif').toUpperCase() : null, telefono: v('pvTel'), correo: v('pvCorreo'),
+        contacto: v('pvContacto'), rubro: v('pvRubro'), direccion: v('pvDir'), nota: v('pvNota')};
+      if(!fila.nombre){ alert('Falta el nombre del proveedor.'); return; }
+      const id = sec.querySelector('#pvId').value;
+      e.currentTarget.disabled = true;
+      const r = id ? await db.from('proveedores').update(fila).eq('id', id) : await db.from('proveedores').insert(fila);
+      sec.querySelector('#pvGuardar').disabled = false;
+      if(r.error){
+        alert(/duplicate|unique/i.test(r.error.message) ? 'Ya existe un proveedor con ese nombre o ese RIF.' : 'No se pudo guardar: ' + r.error.message);
+        return;
+      }
+      limpiar();
+      sec.querySelector('#pvForm').open = false;
+      await cargar();
+      cargarNombresProveedores();
+    };
+  }
+  cargar();
+}
+
+// ===== Inventario =====
+let invVista = 'existencias';
+try{ invVista = localStorage.getItem('hh_inv_vista') || 'existencias'; }catch(e){}
+const INV_VISTAS = [
+  ['existencias', '📋 Existencias'], ['entrada', '⬇️ Entrada'], ['salida', '⬆️ Salida'],
+  ['solicitudes', '📝 Solicitudes'], ['movimientos', '🧾 Movimientos'], ['productos', '🏷️ Productos']
+];
+const INV_TIPO = {entrada: '⬇️ Entrada', salida: '⬆️ Salida', ajuste_mas: '➕ Ajuste', ajuste_menos: '➖ Ajuste'};
+const SOL_ESTADO = {pendiente: ['Pendiente', '#c9772f'], aprobada: ['Aprobada', '#3b78b5'], parcial: ['Entrega parcial', '#7a5aa6'],
+  entregada: ['Entregada', '#4f8f6a'], rechazada: ['Rechazada', '#c1503f'], anulada: ['Anulada', '#5b6472']};
+
+function renderInventarioSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  const edita = puedeDinero();
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#6b7f3a;"><span class="tcIcono">📦</span>Inventario de materiales</h3>'
+    + (edita ? '' : notaSinPermiso('Registrar entradas, salidas y solicitudes'))
+    + '<div id="invTabs" style="display:flex;gap:4px;flex-wrap:wrap;margin:6px 0 10px;"></div>'
+    + '<div id="invCuerpo"><div class="empty">Cargando…</div></div>'
+    + '<datalist id="dlInvCategorias"></datalist>';
+  body.appendChild(sec);
+  const cuerpo = sec.querySelector('#invCuerpo');
+  let D = {productos: [], proveedores: [], movs: [], sols: [], items: [], perfiles: {}};
+  const vistas = INV_VISTAS.filter(([k])=>edita || !['entrada', 'salida'].includes(k));
+  if(!vistas.some(([k])=>k === invVista)) invVista = 'existencias';
+
+  const prod = id=>D.productos.find(p=>p.id === id) || {};
+  const quien = id=>{ const p = D.perfiles[id]; return p ? (p.nombre || p.correo) : ''; };
+  const opcionesProd = (soloActivos)=>'<option value="">— elige —</option>' + D.productos.filter(p=>!soloActivos || p.activo)
+    .map(p=>'<option value="' + p.id + '">' + escHtml(p.nombre) + ' (' + escHtml(p.unidad) + ') · hay ' + fmtCant(p.existencia) + '</option>').join('');
+  const pintarTabs = ()=>{
+    const pend = D.sols.filter(s=>s.estado === 'pendiente' || s.estado === 'aprobada' || s.estado === 'parcial').length;
+    const bajos = D.productos.filter(p=>p.activo && Number(p.stock_minimo) > 0 && Number(p.existencia) <= Number(p.stock_minimo)).length;
+    sec.querySelector('#invTabs').innerHTML = vistas.map(([k, et])=>'<button class="chip" data-inv-vista="' + k + '" style="'
+      + (k === invVista ? 'background:#6b7f3a;color:#fff;' : 'background:var(--panel2);') + '">' + et
+      + (k === 'solicitudes' && pend ? ' <span class="subBadge">' + pend + '</span>' : '')
+      + (k === 'existencias' && bajos ? ' <span class="subBadge">' + bajos + '</span>' : '') + '</button>').join('');
+    sec.querySelectorAll('[data-inv-vista]').forEach(b=>{ b.onclick = ()=>{
+      invVista = b.dataset.invVista;
+      try{ localStorage.setItem('hh_inv_vista', invVista); }catch(e){}
+      pintar();
+    }; });
+  };
+  const err = (r, que)=>{ if(r.error){ alert('No se pudo ' + que + ': ' + r.error.message); return true; } return false; };
+
+  const cargar = async ()=>{
+    const [pr, pv, mv, so, it, pf] = await Promise.all([
+      db.from('v_inventario').select('*').order('nombre'),
+      db.from('proveedores').select('id, nombre, activo').order('nombre'),
+      db.from('inventario_movimientos').select('*').order('numero', {ascending: false}).limit(1000),
+      db.from('solicitudes_material').select('*').order('numero', {ascending: false}).limit(300),
+      db.from('solicitud_items').select('*'),
+      db.from('perfiles').select('id, nombre, correo')
+    ]);
+    const fallo = [pr, pv, mv, so, it].find(r=>r.error);
+    if(fallo){ cuerpo.innerHTML = '<div class="empty">No se pudo leer el inventario: ' + escHtml(fallo.error.message) + '</div>'; return; }
+    D.productos = pr.data || [];
+    D.proveedores = pv.data || [];
+    D.movs = mv.data || [];
+    D.sols = so.data || [];
+    D.items = it.data || [];
+    D.perfiles = {};
+    (pf.data || []).forEach(p=>{ D.perfiles[p.id] = p; });
+    sec.querySelector('#dlInvCategorias').innerHTML = Array.from(new Set(D.productos.map(p=>p.categoria).filter(Boolean)))
+      .map(c=>'<option value="' + escHtml(c) + '">').join('');
+    pintar();
+  };
+
+  const filaMov = m=>{
+    const p = prod(m.producto_id);
+    const signo = m.tipo === 'entrada' || m.tipo === 'ajuste_mas' ? '+' : '−';
+    const sol = m.solicitud_id ? D.sols.find(s=>s.id === m.solicitud_id) : null;
+    const pv = m.proveedor_id ? D.proveedores.find(x=>x.id === m.proveedor_id) : null;
+    return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:2px;">'
+      + '<div style="display:flex;justify-content:space-between;gap:6px;"><span><b>#' + m.numero + '</b> · ' + INV_TIPO[m.tipo] + ' · ' + escHtml(p.nombre || '') + '</span>'
+      + '<b style="color:' + (signo === '+' ? 'var(--green)' : 'var(--red)') + ';white-space:nowrap;">' + signo + fmtCant(m.cantidad) + ' ' + escHtml(p.unidad || '') + '</b></div>'
+      + '<div style="font-size:11px;color:var(--sub);">' + fmtFechaCorta(m.fecha)
+        + (pv ? ' · ' + escHtml(pv.nombre) : '') + (m.documento ? ' · Doc. ' + escHtml(m.documento) : '')
+        + (m.costo_unitario != null ? ' · ' + fmtMoney(Number(m.costo_unitario)) + ' c/u' : '')
+        + (sol ? ' · ' + numSolicitud(sol.numero) : '') + (m.destino ? ' · ' + escHtml(m.destino) : '')
+        + (m.recibido_por ? ' · Recibió: ' + escHtml(m.recibido_por) : '') + (m.nota ? ' · ' + escHtml(m.nota) : '')
+        + '<br>Registró: ' + escHtml(quien(m.registrado_por) || '—') + ' · ' + new Date(m.creado_en).toLocaleString('es-VE') + '</div></div>';
+  };
+
+  const pintar = ()=>{
+    pintarTabs();
+    if(invVista === 'existencias'){
+      cuerpo.innerHTML = '<input class="searchbox" id="invBuscar" placeholder="Buscar producto, código o categoría…">'
+        + '<label style="font-size:12px;display:flex;gap:6px;align-items:center;margin:2px 0 6px;"><input type="checkbox" id="invBajos"> Solo los que están en el mínimo o por debajo</label>'
+        + '<div id="invLista"></div>';
+      const lista = ()=>{
+        const n = normalizeSearch(cuerpo.querySelector('#invBuscar').value || '');
+        const bajos = cuerpo.querySelector('#invBajos').checked;
+        const vis = D.productos.filter(p=>p.activo
+          && (!n || normalizeSearch([p.nombre, p.codigo, p.categoria].join(' ')).includes(n))
+          && (!bajos || Number(p.existencia) <= Number(p.stock_minimo)));
+        cuerpo.querySelector('#invLista').innerHTML = vis.length ? vis.map(p=>{
+          const bajo = Number(p.stock_minimo) > 0 && Number(p.existencia) <= Number(p.stock_minimo);
+          return '<div class="comp-item" style="cursor:pointer;" data-kardex="' + p.id + '"><span class="t"><b>' + escHtml(p.nombre) + '</b>'
+            + '<br><span style="font-size:11px;color:var(--sub);">' + [p.codigo, p.categoria, p.ubicacion].filter(Boolean).map(escHtml).join(' · ')
+            + (Number(p.stock_minimo) > 0 ? ' · mínimo ' + fmtCant(p.stock_minimo) : '') + '</span></span>'
+            + '<b style="white-space:nowrap;color:' + (bajo ? 'var(--red)' : 'var(--text)') + ';">' + (bajo ? '⚠️ ' : '') + fmtCant(p.existencia) + ' ' + escHtml(p.unidad) + '</b></div>'
+            + '<div data-kardex-de="' + p.id + '" style="display:none;margin:0 0 8px 10px;"></div>';
+        }).join('') : '<div class="empty">' + (D.productos.length ? 'Sin coincidencias.' : 'Todavía no hay productos. Créalos en 🏷️ Productos.') + '</div>';
+        cuerpo.querySelectorAll('[data-kardex]').forEach(f=>{ f.onclick = ()=>{
+          const host = cuerpo.querySelector('[data-kardex-de="' + f.dataset.kardex + '"]');
+          if(host.style.display === 'none'){
+            const movs = D.movs.filter(m=>m.producto_id === f.dataset.kardex);
+            host.innerHTML = movs.length ? movs.slice(0, 30).map(filaMov).join('') : '<div class="assumption">Sin movimientos.</div>';
+            host.style.display = '';
+          }else host.style.display = 'none';
+        }; });
+      };
+      cuerpo.querySelector('#invBuscar').oninput = lista;
+      cuerpo.querySelector('#invBajos').onchange = lista;
+      lista();
+    }
+
+    else if(invVista === 'productos'){
+      cuerpo.innerHTML = (edita ? '<details id="ipForm"><summary style="cursor:pointer;font-weight:700;padding:6px 0;">➕ <span id="ipTit">Nuevo producto</span></summary>'
+        + '<input type="hidden" id="ipId">'
+        + '<div class="form-row"><label>Nombre *</label><input type="text" id="ipNombre" placeholder="Ej. Cloro, Bombillo LED 12W"></div>'
+        + '<div class="form-row"><label>Unidad de medida *</label><select id="ipUnidad">' + UNIDADES.map(u=>'<option>' + u + '</option>').join('')
+          + '<option value="__otra">Otra…</option></select></div>'
+        + '<div class="form-row" id="ipOtraFila" style="display:none;"><label>¿Cuál unidad?</label><input type="text" id="ipOtra" placeholder="Ej. bidón de 5 L"></div>'
+        + '<div class="form-row"><label>Código</label><input type="text" id="ipCodigo" placeholder="Opcional"></div>'
+        + '<div class="form-row"><label>Categoría</label><input type="text" id="ipCat" list="dlInvCategorias" placeholder="Limpieza, Electricidad…"></div>'
+        + '<div class="form-row"><label>Existencia mínima</label><input type="number" id="ipMin" min="0" step="0.001" value="0"></div>'
+        + '<div class="form-row"><label>Dónde se guarda</label><input type="text" id="ipUbic" placeholder="Ej. Depósito sótano 1"></div>'
+        + '<div class="form-row"><label>Nota</label><input type="text" id="ipNota"></div>'
+        + '<div class="assumption">La existencia no se escribe aquí: sale de las entradas y salidas. La unidad no se puede cambiar después del primer movimiento.</div>'
+        + '<div style="display:flex;gap:6px;margin:6px 0 10px;"><button class="btn primary" id="ipGuardar" style="flex:1;">💾 Guardar</button>'
+        + '<button class="btn ghost" id="ipLimpiar" style="flex:0 0 auto;">Limpiar</button></div></details>' : '')
+        + '<div id="ipLista">' + (D.productos.length ? D.productos.map(p=>'<div class="comp-item" style="' + (p.activo ? '' : 'opacity:.55;') + '">'
+          + '<span class="t"><b>' + escHtml(p.nombre) + '</b> <span style="font-size:11px;color:var(--sub);">(' + escHtml(p.unidad) + ')</span>'
+          + (p.activo ? '' : ' <span style="font-size:11px;color:var(--sub);">inactivo</span>')
+          + '<br><span style="font-size:11px;color:var(--sub);">' + [p.codigo, p.categoria, p.ubicacion, p.nota].filter(Boolean).map(escHtml).join(' · ') + '</span></span>'
+          + (edita ? '<span style="display:flex;gap:4px;"><button class="chip" data-ip-editar="' + p.id + '" style="background:var(--panel2);">✏️</button>'
+            + '<button class="chip" data-ip-activo="' + p.id + '" style="background:var(--panel2);" title="' + (p.activo ? 'Desactivar' : 'Activar') + '">' + (p.activo ? '⏸' : '▶') + '</button></span>' : '')
+          + '</div>').join('') : '<div class="empty">Todavía no hay productos.</div>') + '</div>';
+      if(!edita) return;
+      const selU = cuerpo.querySelector('#ipUnidad');
+      selU.onchange = ()=>{ cuerpo.querySelector('#ipOtraFila').style.display = selU.value === '__otra' ? '' : 'none'; };
+      const limpiar = ()=>{
+        cuerpo.querySelectorAll('#ipForm input').forEach(i=>{ i.value = i.id === 'ipMin' ? '0' : ''; });
+        selU.value = 'unidad'; selU.disabled = false; selU.onchange();
+        cuerpo.querySelector('#ipTit').textContent = 'Nuevo producto';
+      };
+      cuerpo.querySelector('#ipLimpiar').onclick = limpiar;
+      cuerpo.querySelectorAll('[data-ip-editar]').forEach(b=>{ b.onclick = ()=>{
+        const p = prod(b.dataset.ipEditar);
+        cuerpo.querySelector('#ipId').value = p.id;
+        cuerpo.querySelector('#ipNombre').value = p.nombre || '';
+        cuerpo.querySelector('#ipCodigo').value = p.codigo || '';
+        cuerpo.querySelector('#ipCat').value = p.categoria || '';
+        cuerpo.querySelector('#ipMin').value = p.stock_minimo || 0;
+        cuerpo.querySelector('#ipUbic').value = p.ubicacion || '';
+        cuerpo.querySelector('#ipNota').value = p.nota || '';
+        if(UNIDADES.includes(p.unidad)) selU.value = p.unidad;
+        else { selU.value = '__otra'; cuerpo.querySelector('#ipOtra').value = p.unidad; }
+        selU.onchange();
+        const conMovs = D.movs.some(m=>m.producto_id === p.id);
+        selU.disabled = conMovs;
+        cuerpo.querySelector('#ipOtra').disabled = conMovs;
+        cuerpo.querySelector('#ipTit').textContent = 'Editar ' + p.nombre;
+        cuerpo.querySelector('#ipForm').open = true;
+        cuerpo.querySelector('#ipForm').scrollIntoView({block: 'start'});
+      }; });
+      cuerpo.querySelectorAll('[data-ip-activo]').forEach(b=>{ b.onclick = async ()=>{
+        const p = prod(b.dataset.ipActivo);
+        if(p.activo && Number(p.existencia) > 0 && !confirm(p.nombre + ' todavía tiene ' + fmtCant(p.existencia) + ' ' + p.unidad + '. ¿Desactivarlo igual?')) return;
+        if(err(await db.from('productos').update({activo: !p.activo}).eq('id', p.id), 'cambiar el producto')) return;
+        await cargar();
+      }; });
+      cuerpo.querySelector('#ipGuardar').onclick = async ()=>{
+        const v = id=>cuerpo.querySelector('#' + id).value.trim() || null;
+        const unidad = selU.value === '__otra' ? v('ipOtra') : selU.value;
+        const fila = {nombre: v('ipNombre'), codigo: v('ipCodigo'), categoria: v('ipCat'), stock_minimo: Number(v('ipMin')) || 0,
+          ubicacion: v('ipUbic'), nota: v('ipNota')};
+        if(!fila.nombre || !unidad){ alert('Hacen falta el nombre y la unidad de medida.'); return; }
+        const id = v('ipId');
+        if(!selU.disabled) fila.unidad = unidad;
+        const r = id ? await db.from('productos').update(fila).eq('id', id) : await db.from('productos').insert(fila);
+        if(r.error){ alert(/duplicate|unique/i.test(r.error.message) ? 'Ya existe un producto con ese nombre o ese código.' : 'No se pudo guardar: ' + r.error.message); return; }
+        await cargar();
+      };
+    }
+
+    else if(invVista === 'entrada' || invVista === 'salida'){
+      const ent = invVista === 'entrada';
+      cuerpo.innerHTML = '<div class="assumption">' + (ent
+          ? 'Lo que llega al depósito: compras, donaciones o devoluciones. Suma a la existencia.'
+          : 'Lo que sale del depósito sin una solicitud (uso inmediato). Para lo que se pide con anticipación usa 📝 Solicitudes.')
+        + ' Cada registro queda numerado y no se borra; si te equivocas, haz un ajuste.</div>'
+        + '<div class="form-row"><label>Tipo</label><select id="imTipo">' + (ent
+            ? '<option value="entrada">Entrada</option><option value="ajuste_mas">Ajuste (+): corrige un faltante o un error</option>'
+            : '<option value="salida">Salida</option><option value="ajuste_menos">Ajuste (−): pérdida, daño o error</option>') + '</select></div>'
+        + '<div class="form-row"><label>Producto *</label><select id="imProd">' + opcionesProd(true) + '</select></div>'
+        + '<div class="form-row"><label>Cantidad * <span id="imUnidad" style="color:var(--sub);"></span></label><input type="number" id="imCant" min="0" step="0.001"></div>'
+        + '<div class="form-row"><label>Fecha</label><input type="date" id="imFecha" value="' + hoyLocal() + '"></div>'
+        + (ent
+          ? '<div class="form-row"><label>Proveedor</label><select id="imProv"><option value="">— ninguno —</option>'
+              + D.proveedores.filter(p=>p.activo).map(p=>'<option value="' + p.id + '">' + escHtml(p.nombre) + '</option>').join('') + '</select></div>'
+            + '<div class="form-row"><label>Factura / nota de entrega</label><input type="text" id="imDoc"></div>'
+            + '<div class="form-row"><label>Costo unitario $</label><input type="number" id="imCosto" min="0" step="0.01" placeholder="Opcional"></div>'
+          : '<div class="form-row"><label>Dónde se usó</label><input type="text" id="imDestino" placeholder="Ej. Pasillo piso 2, Torre A"></div>'
+            + '<div class="form-row"><label>Quién lo recibe</label><input type="text" id="imRecibe" placeholder="Ej. Estanislao Ascanio"></div>')
+        + '<div class="form-row"><label>Nota <span id="imNotaReq" style="color:var(--red);display:none;">(obligatoria en un ajuste)</span></label><input type="text" id="imNota"></div>'
+        + '<button class="btn primary" id="imGuardar" style="width:100%;margin-top:6px;">' + (ent ? '⬇️ Registrar entrada' : '⬆️ Registrar salida') + '</button>'
+        + '<h3 class="section" style="margin-top:14px;">Últimos movimientos</h3>'
+        + (D.movs.filter(m=>ent ? (m.tipo === 'entrada' || m.tipo === 'ajuste_mas') : (m.tipo === 'salida' || m.tipo === 'ajuste_menos')).slice(0, 10).map(filaMov).join('')
+          || '<div class="empty">Sin movimientos todavía.</div>');
+      const selP = cuerpo.querySelector('#imProd');
+      selP.onchange = ()=>{ const p = prod(selP.value); cuerpo.querySelector('#imUnidad').textContent = p.unidad ? '(' + p.unidad + (ent ? '' : ', hay ' + fmtCant(p.existencia)) + ')' : ''; };
+      cuerpo.querySelector('#imTipo').onchange = e=>{ cuerpo.querySelector('#imNotaReq').style.display = e.target.value.startsWith('ajuste') ? '' : 'none'; };
+      cuerpo.querySelector('#imGuardar').onclick = async e=>{
+        const v = id=>{ const el = cuerpo.querySelector('#' + id); return el ? (el.value.trim() || null) : null; };
+        const tipo = v('imTipo'), cant = Number(v('imCant'));
+        if(!v('imProd') || !(cant > 0)){ alert('Elige el producto y una cantidad mayor que cero.'); return; }
+        if(tipo.startsWith('ajuste') && !v('imNota')){ alert('Un ajuste necesita una nota que explique el motivo.'); return; }
+        const p = prod(v('imProd'));
+        if(!ent && cant > Number(p.existencia)){ alert('Solo hay ' + fmtCant(p.existencia) + ' ' + p.unidad + ' de ' + p.nombre + '.'); return; }
+        const fila = {tipo, producto_id: v('imProd'), cantidad: cant, fecha: v('imFecha') || hoyLocal(), nota: v('imNota')};
+        if(ent){ fila.proveedor_id = v('imProv'); fila.documento = v('imDoc'); fila.costo_unitario = v('imCosto') != null ? Number(v('imCosto')) : null; }
+        else { fila.destino = v('imDestino'); fila.recibido_por = v('imRecibe'); }
+        e.currentTarget.disabled = true;
+        const r = await db.from('inventario_movimientos').insert(fila);
+        if(err(r, 'registrar el movimiento')){ cuerpo.querySelector('#imGuardar').disabled = false; return; }
+        await cargar();
+      };
+    }
+
+    else if(invVista === 'movimientos'){
+      cuerpo.innerHTML = '<div style="display:flex;gap:6px;"><select id="ivTipo" style="flex:1;"><option value="">Todos los tipos</option>'
+        + Object.entries(INV_TIPO).map(([k, t])=>'<option value="' + k + '">' + t + (k.startsWith('ajuste') ? (k === 'ajuste_mas' ? ' (+)' : ' (−)') : '') + '</option>').join('') + '</select>'
+        + '<select id="ivProd" style="flex:1;"><option value="">Todos los productos</option>' + D.productos.map(p=>'<option value="' + p.id + '">' + escHtml(p.nombre) + '</option>').join('') + '</select></div>'
+        + '<div id="ivLista" style="margin-top:6px;"></div>';
+      const lista = ()=>{
+        const t = cuerpo.querySelector('#ivTipo').value, pid = cuerpo.querySelector('#ivProd').value;
+        const vis = D.movs.filter(m=>(!t || m.tipo === t) && (!pid || m.producto_id === pid));
+        cuerpo.querySelector('#ivLista').innerHTML = vis.length ? vis.slice(0, 200).map(filaMov).join('')
+          + (vis.length > 200 ? '<div class="assumption">Se muestran los 200 más recientes. El historial completo está en 📥 Exportar.</div>' : '')
+          : '<div class="empty">Sin movimientos.</div>';
+      };
+      cuerpo.querySelector('#ivTipo').onchange = lista;
+      cuerpo.querySelector('#ivProd').onchange = lista;
+      lista();
+    }
+
+    else if(invVista === 'solicitudes'){
+      cuerpo.innerHTML = (edita ? '<details id="isForm"><summary style="cursor:pointer;font-weight:700;padding:6px 0;">➕ Nueva solicitud de material</summary>'
+        + '<div class="form-row"><label>Quién la pide *</label><input type="text" id="isSolic" placeholder="Ej. Daniel Velázquez (mantenimiento)"></div>'
+        + '<div class="form-row"><label>Dónde se va a usar</label><input type="text" id="isArea" placeholder="Ej. Áreas comunes Torre B"></div>'
+        + '<div class="form-row"><label>Para qué</label><input type="text" id="isMotivo"></div>'
+        + '<div class="form-row"><label>Fecha</label><input type="date" id="isFecha" value="' + hoyLocal() + '"></div>'
+        + '<div id="isItems"></div>'
+        + '<button class="chip" id="isMas" style="background:var(--panel2);margin:4px 0;">➕ Otro producto</button>'
+        + '<button class="btn primary" id="isCrear" style="width:100%;margin:6px 0 10px;">📝 Registrar solicitud</button></details>' : '')
+        + '<select id="isFiltro" style="width:100%;margin:4px 0 6px;"><option value="abiertas">Abiertas (pendientes, aprobadas o parciales)</option>'
+          + '<option value="">Todas</option>' + Object.entries(SOL_ESTADO).map(([k, [t]])=>'<option value="' + k + '">' + t + '</option>').join('') + '</select>'
+        + '<div id="isLista"></div>';
+      if(edita){
+        const host = cuerpo.querySelector('#isItems');
+        const fila = ()=>{
+          const d = document.createElement('div');
+          d.className = 'form-row';
+          d.innerHTML = '<select class="isProd" style="flex:2;min-width:0;">' + opcionesProd(true) + '</select>'
+            + '<input type="number" class="isCant" min="0" step="0.001" placeholder="Cant." style="flex:1;min-width:0;max-width:90px;">'
+            + '<button class="chip" style="background:var(--panel2);flex:0 0 auto;" title="Quitar">✕</button>';
+          d.querySelector('button').onclick = ()=>d.remove();
+          host.appendChild(d);
+        };
+        fila();
+        cuerpo.querySelector('#isMas').onclick = fila;
+        cuerpo.querySelector('#isCrear').onclick = async e=>{
+          const items = Array.from(host.children).map(d=>({producto_id: d.querySelector('.isProd').value, cantidad: Number(d.querySelector('.isCant').value)}))
+            .filter(x=>x.producto_id && x.cantidad > 0);
+          const solic = cuerpo.querySelector('#isSolic').value.trim();
+          if(!solic || !items.length){ alert('Indica quién la pide y al menos un producto con su cantidad.'); return; }
+          if(new Set(items.map(x=>x.producto_id)).size !== items.length){ alert('Hay un producto repetido: súmalo en una sola línea.'); return; }
+          e.currentTarget.disabled = true;
+          const r = await db.rpc('crear_solicitud', {p_solicitante: solic, p_area: cuerpo.querySelector('#isArea').value, p_motivo: cuerpo.querySelector('#isMotivo').value,
+            p_items: items, p_fecha: cuerpo.querySelector('#isFecha').value || hoyLocal()});
+          if(err(r, 'registrar la solicitud')){ cuerpo.querySelector('#isCrear').disabled = false; return; }
+          alert('Solicitud ' + numSolicitud(r.data) + ' registrada.');
+          await cargar();
+        };
+      }
+      const lista = ()=>{
+        const f = cuerpo.querySelector('#isFiltro').value;
+        const vis = D.sols.filter(s=>!f || (f === 'abiertas' ? ['pendiente', 'aprobada', 'parcial'].includes(s.estado) : s.estado === f));
+        cuerpo.querySelector('#isLista').innerHTML = vis.length ? vis.map(s=>{
+          const [et, color] = SOL_ESTADO[s.estado] || [s.estado, '#888'];
+          const its = D.items.filter(i=>i.solicitud_id === s.id);
+          return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:4px;">'
+            + '<div style="display:flex;justify-content:space-between;gap:6px;"><b>' + numSolicitud(s.numero) + ' · ' + escHtml(s.solicitante) + '</b>'
+            + '<span style="background:' + color + ';color:#fff;border-radius:6px;padding:1px 7px;font-size:11px;white-space:nowrap;">' + et + '</span></div>'
+            + '<div style="font-size:11px;color:var(--sub);">' + fmtFechaCorta(s.fecha) + (s.area ? ' · ' + escHtml(s.area) : '') + (s.motivo ? ' · ' + escHtml(s.motivo) : '')
+              + '<br>Registró: ' + escHtml(quien(s.creado_por) || '—')
+              + (s.resuelto_por ? ' · ' + et + ' por ' + escHtml(quien(s.resuelto_por) || '—') + ' el ' + fmtFechaCorta(s.resuelto_en) : '')
+              + (s.nota_resolucion ? ' · ' + escHtml(s.nota_resolucion) : '') + '</div>'
+            + '<div style="font-size:12px;">' + its.map(i=>{ const p = prod(i.producto_id);
+                return '• ' + escHtml(p.nombre || '') + ': ' + fmtCant(i.cantidad) + ' ' + escHtml(p.unidad || '')
+                  + (Number(i.entregado) > 0 ? ' <span style="color:var(--green);">(entregado ' + fmtCant(i.entregado) + ')</span>' : ''); }).join('<br>') + '</div>'
+            + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+              + '<button class="chip" data-is-imp="' + s.id + '" style="background:var(--panel2);">🖨️ Imprimir</button>'
+              + (edita && s.estado === 'pendiente' ? '<button class="chip" data-is-res="aprobada" data-id="' + s.id + '" style="background:#3b78b5;color:#fff;">✓ Aprobar</button>'
+                + '<button class="chip" data-is-res="rechazada" data-id="' + s.id + '" style="background:var(--panel2);">✕ Rechazar</button>' : '')
+              + (edita && ['aprobada', 'parcial'].includes(s.estado) ? '<button class="chip" data-is-ent="' + s.id + '" style="background:var(--green);color:#fff;">📦 Entregar</button>' : '')
+              + (edita && ['pendiente', 'aprobada'].includes(s.estado) ? '<button class="chip" data-is-res="anulada" data-id="' + s.id + '" style="background:var(--panel2);">🚫 Anular</button>' : '')
+            + '</div><div data-is-ent-de="' + s.id + '"></div></div>';
+        }).join('') : '<div class="empty">No hay solicitudes ' + (f === 'abiertas' ? 'abiertas' : 'con ese estado') + '.</div>';
+        cuerpo.querySelectorAll('[data-is-imp]').forEach(b=>{ b.onclick = ()=>imprimirSolicitud(D.sols.find(s=>s.id === b.dataset.isImp), D, quien); });
+        cuerpo.querySelectorAll('[data-is-res]').forEach(b=>{ b.onclick = async ()=>{
+          const estado = b.dataset.isRes;
+          let nota = null;
+          if(estado !== 'aprobada'){
+            nota = prompt('Motivo para ' + (estado === 'rechazada' ? 'rechazar' : 'anular') + ' la solicitud:');
+            if(!nota || !nota.trim()) return;
+          }
+          if(err(await db.rpc('resolver_solicitud', {p_id: b.dataset.id, p_estado: estado, p_nota: nota}), 'actualizar la solicitud')) return;
+          await cargar();
+        }; });
+        cuerpo.querySelectorAll('[data-is-ent]').forEach(b=>{ b.onclick = ()=>{
+          const id = b.dataset.isEnt, host = cuerpo.querySelector('[data-is-ent-de="' + id + '"]');
+          if(host.innerHTML){ host.innerHTML = ''; return; }
+          const its = D.items.filter(i=>i.solicitud_id === id && Number(i.entregado) < Number(i.cantidad));
+          host.innerHTML = '<div style="border-top:1px dashed var(--border);margin-top:6px;padding-top:6px;">'
+            + its.map(i=>{ const p = prod(i.producto_id), falta = Number(i.cantidad) - Number(i.entregado);
+                return '<div class="form-row"><label>' + escHtml(p.nombre) + ' <span style="color:var(--sub);font-size:11px;">(falta ' + fmtCant(falta) + ', hay ' + fmtCant(p.existencia) + ' ' + escHtml(p.unidad) + ')</span></label>'
+                  + '<input type="number" data-ent-item="' + i.id + '" min="0" step="0.001" value="' + Math.min(falta, Math.max(0, Number(p.existencia))) + '" style="max-width:90px;"></div>'; }).join('')
+            + '<div class="form-row"><label>Quién lo recibe *</label><input type="text" class="entRecibe" value="' + escHtml((D.sols.find(s=>s.id === id) || {}).solicitante || '') + '"></div>'
+            + '<div class="form-row"><label>Nota</label><input type="text" class="entNota"></div>'
+            + '<button class="btn primary entOk" style="width:100%;">📦 Confirmar entrega</button></div>';
+          host.querySelector('.entOk').onclick = async e=>{
+            const items = Array.from(host.querySelectorAll('[data-ent-item]')).map(x=>({item_id: x.dataset.entItem, cantidad: Number(x.value) || 0})).filter(x=>x.cantidad > 0);
+            if(!items.length){ alert('No hay cantidades para entregar.'); return; }
+            e.currentTarget.disabled = true;
+            const r = await db.rpc('entregar_solicitud', {p_id: id, p_items: items, p_recibido_por: host.querySelector('.entRecibe').value, p_nota: host.querySelector('.entNota').value || null});
+            if(err(r, 'registrar la entrega')){ host.querySelector('.entOk').disabled = false; return; }
+            await cargar();
+          };
+        }; });
+      };
+      cuerpo.querySelector('#isFiltro').onchange = lista;
+      lista();
+    }
+  };
+  cargar();
+}
+
+// hoja imprimible de una solicitud, con firmas, para el archivo físico
+function imprimirSolicitud(s, D, quien){
+  const its = D.items.filter(i=>i.solicitud_id === s.id);
+  const prod = id=>D.productos.find(p=>p.id === id) || {};
+  const salidas = D.movs.filter(m=>m.solicitud_id === s.id);
+  const w = window.open('', '_blank');
+  if(!w){ alert('El navegador bloqueó la ventana de impresión. Permite las ventanas emergentes para este sitio.'); return; }
+  const td = 'style="border:1px solid #999;padding:6px 8px;"';
+  w.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>' + numSolicitud(s.numero) + '</title>'
+    + '<style>body{font-family:Arial,sans-serif;margin:28px;color:#222;font-size:13px}h1{font-size:18px;margin:0}table{border-collapse:collapse;width:100%;margin-top:12px}'
+    + 'th{background:#eee;text-align:left}.firmas{display:flex;gap:40px;margin-top:60px}.firmas div{flex:1;border-top:1px solid #333;text-align:center;padding-top:4px}</style></head><body>'
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;"><div><h1>Conjunto Residencial Hatillo Hill</h1><div>Solicitud de material</div></div>'
+    + '<div style="text-align:right;"><b style="font-size:20px;">' + numSolicitud(s.numero) + '</b><br>' + fmtFechaCorta(s.fecha) + '<br>Estado: ' + (SOL_ESTADO[s.estado] || [s.estado])[0] + '</div></div>'
+    + '<p><b>Solicitante:</b> ' + escHtml(s.solicitante) + (s.area ? '<br><b>Dónde se usará:</b> ' + escHtml(s.area) : '') + (s.motivo ? '<br><b>Para qué:</b> ' + escHtml(s.motivo) : '')
+    + '<br><b>Registrada por:</b> ' + escHtml(quien(s.creado_por) || '—') + ' el ' + new Date(s.creado_en).toLocaleString('es-VE')
+    + (s.resuelto_por ? '<br><b>' + (SOL_ESTADO[s.estado] || [''])[0] + ' por:</b> ' + escHtml(quien(s.resuelto_por) || '—') + ' el ' + new Date(s.resuelto_en).toLocaleString('es-VE') : '')
+    + (s.nota_resolucion ? '<br><b>Nota:</b> ' + escHtml(s.nota_resolucion) : '') + '</p>'
+    + '<table><tr><th ' + td + '>Producto</th><th ' + td + '>Unidad</th><th ' + td + '>Solicitado</th><th ' + td + '>Entregado</th></tr>'
+    + its.map(i=>{ const p = prod(i.producto_id); return '<tr><td ' + td + '>' + escHtml(p.nombre || '') + '</td><td ' + td + '>' + escHtml(p.unidad || '') + '</td><td ' + td + '>'
+      + fmtCant(i.cantidad) + '</td><td ' + td + '>' + fmtCant(i.entregado) + '</td></tr>'; }).join('') + '</table>'
+    + (salidas.length ? '<p style="margin-top:14px;"><b>Entregas:</b><br>' + salidas.map(m=>'Mov. #' + m.numero + ' · ' + fmtFechaCorta(m.fecha) + ' · ' + escHtml(prod(m.producto_id).nombre || '')
+      + ' ' + fmtCant(m.cantidad) + ' ' + escHtml(prod(m.producto_id).unidad || '') + ' · recibió ' + escHtml(m.recibido_por || '—')).join('<br>') + '</p>' : '')
+    + '<div class="firmas"><div>Solicitado por</div><div>Aprobado por</div><div>Recibido por</div></div>'
+    + '<script>window.onload=function(){window.print();}<\/script></body></html>');
+  w.document.close();
+}
 
 function renderListaTab(body){
   const totalCondoDebt = deudaRows.reduce((s,r)=>s+(r.monto||0),0);
