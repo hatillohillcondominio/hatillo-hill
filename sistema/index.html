@@ -603,10 +603,15 @@ function rolesAsignables(){
 function notaSinPermiso(que, quien){
   return '<div class="assumption" style="margin-top:6px;">🔒 ' + que + ' lo hace ' + (quien || 'el administrador o la tesorería') + '.</div>';
 }
-// deja una sección en solo lectura: esconde sus botones y bloquea los campos
+// deja una sección en solo lectura: esconde sus botones (menos los de "Ver")
+// y bloquea los campos, también lo que se pinte después al terminar de cargar
 function soloLectura(el){
-  el.querySelectorAll('button').forEach(b=>{ b.style.display = 'none'; });
-  el.querySelectorAll('input, select, textarea').forEach(i=>{ i.disabled = true; });
+  const aplicar = ()=>{
+    el.querySelectorAll('button:not([data-ver-recibo])').forEach(b=>{ b.style.display = 'none'; });
+    el.querySelectorAll('input, select, textarea').forEach(i=>{ i.disabled = true; });
+  };
+  aplicar();
+  new MutationObserver(aplicar).observe(el, {childList: true, subtree: true});
 }
 
 function avisoBase(msg, esError){
@@ -3427,6 +3432,20 @@ function renderCuentasTab(body){
   // los reportados van arriba de todo en Cobros: es lo primero que hay que atender
   const primerCobro = Array.from(body.children).find(el=>el.dataset.sub === 'cobros' && el !== bloqueReportados);
   if(bloqueReportados && primerCobro) body.insertBefore(bloqueReportados, primerCobro);
+  // la junta ve el dinero del día a día pero no lo mueve
+  if(!puedeDinero()){
+    ['gastos', 'cobros', 'pagos', 'banco'].forEach(k=>{
+      const els = Array.from(body.children).filter(el=>el.dataset.sub === k);
+      if(!els.length) return;
+      els.forEach(soloLectura);
+      const tmp = document.createElement('div');
+      tmp.innerHTML = notaSinPermiso('Registrar o cambiar movimientos en esta sección');
+      const nota = tmp.firstChild;
+      nota.dataset.sub = k;
+      if(k !== adminSub) nota.style.display = 'none';
+      body.insertBefore(nota, els[0]);
+    });
+  }
   const menu = document.createElement('div');
   menu.className = 'subMenu';
   menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>k !== 'usuarios' || verUsuarios).map(([k, etiqueta, color])=>
@@ -4608,6 +4627,11 @@ function pintarCargosPendientes(apt){
 
 function renderFichaPago(pane){
   if(!puedeEditar()){ fichaSinPermiso(pane); return; }
+  if(!puedeDinero()){
+    pane.innerHTML = notaSinPermiso('Registrar un pago del condominio')
+      + '<div class="assumption">Los abonos a proyectos (como el Pozo) sí se registran en la pestaña Proyectos.</div>';
+    return;
+  }
   const apt = selected.ref;
   const d = findDeuda(apt);
   const pd = proyectoDeudas(apt.id);
