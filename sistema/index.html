@@ -184,6 +184,9 @@
   .accionSub{font-size:11px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .accionBtn{background:transparent;border:none;font-size:16px;cursor:pointer;flex:none;padding:4px;}
   .accionBtn:disabled{opacity:.35;cursor:not-allowed;}
+  .listaBtn{font-size:11.5px;padding:7px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #avisoReloj{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9999;max-width:min(560px,calc(100% - 32px));background:#b45309;color:#fff;font-size:12.5px;padding:8px 34px 8px 12px;border-radius:0 0 10px 10px;box-shadow:0 4px 14px rgba(0,0,0,.25);}
+  #avisoReloj button{position:absolute;top:4px;right:6px;background:transparent;border:none;color:#fff;font-size:16px;cursor:pointer;}
   .dashRow{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:5px 0;border-bottom:1px dashed var(--border);gap:8px;}
   .dashRow:last-child{border-bottom:none;}
   .dashRank{color:var(--sub);font-weight:700;width:18px;flex:0 0 18px;}
@@ -879,8 +882,48 @@ async function guardarConfig(clave, valor){
   if(error) throw new Error(error.message);
 }
 
+// ---------- reloj de la PC contra la hora del servidor ----------
+// No bloquea nada: si la fecha u hora de la PC difiere de la de la base en mas de
+// 5 minutos, muestra un aviso arriba, porque fechas de pagos y gastos salen de la PC.
+const RELOJ_TOLERANCIA_MIN = 5;
+async function horaDelServidor(){
+  try{
+    const { data, error } = await db.rpc('hora_servidor');
+    if(!error && data) return new Date(data);
+  }catch(e){}
+  // respaldo si aun no se corrio el SQL 17: la cabecera Date de la API, si el navegador la deja leer
+  try{
+    const r = await fetch(SB_URL + '/auth/v1/health', {headers:{apikey: SB_KEY}, cache:'no-store'});
+    const h = r.headers.get('date');
+    if(h) return new Date(h);
+  }catch(e){}
+  return null;
+}
+async function revisarReloj(){
+  const t0 = Date.now();
+  const srv = await horaDelServidor();
+  if(!srv || isNaN(srv)) return;
+  const pc = new Date((t0 + Date.now()) / 2);
+  const difMin = Math.abs(pc - srv) / 60000;
+  let aviso = document.getElementById('avisoReloj');
+  if(difMin <= RELOJ_TOLERANCIA_MIN){ if(aviso) aviso.remove(); return; }
+  const fmt = d => d.toLocaleString('es-VE', {timeZone:'America/Caracas', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+  if(!aviso){
+    aviso = document.createElement('div');
+    aviso.id = 'avisoReloj';
+    document.body.appendChild(aviso);
+  }
+  const dif = difMin >= 1440 ? Math.round(difMin/1440) + ' día(s)' : difMin >= 60 ? Math.round(difMin/60) + ' hora(s)' : Math.round(difMin) + ' minuto(s)';
+  aviso.innerHTML = '⚠️ <b>La fecha de esta PC no coincide con la del sistema</b> (diferencia de ' + dif + ').<br>'
+    + 'PC: ' + fmt(pc) + ' · Sistema: ' + fmt(srv) + '. Revisa la fecha y hora de Windows antes de registrar pagos o gastos.'
+    + '<button type="button" title="Ocultar">✕</button>';
+  aviso.querySelector('button').onclick = ()=> aviso.remove();
+}
+
 // Arranque: una vez hay sesion valida, carga los datos y monta la escena.
 async function arrancarConDatos(){
+  revisarReloj();
+  if(!window._relojTimer) window._relojTimer = setInterval(revisarReloj, 30*60*1000);
   try{
     await cargarDesdeBase();
   }catch(e){
@@ -2855,7 +2898,14 @@ function periodoActual(){
   return periodosCache.find(p=>p.id===mesActual) || null;
 }
 
+// un mes nuevo solo se abre con todos los anteriores cerrados: si no, se acumulan meses
+// abiertos o emitidos a la vez y los gastos y pagos pueden caer en el mes equivocado
+function mesSinCerrar(){
+  return periodosCache.filter(p=>p.estado!=='cerrado').map(p=>p.id).sort()[0] || null;
+}
 async function abrirMes(id){
+  const pend = mesSinCerrar();
+  if(pend) throw new Error(mesLegible(pend) + ' todavía no está cerrado. Ciérralo antes de abrir un mes nuevo.');
   const [a, m] = id.split('-').map(Number);
   const { error } = await db.from('periodos').insert({id, anio:a, mes:m});
   if(error) throw new Error(error.message);
@@ -3518,6 +3568,8 @@ function renderCuentasCompleto(body){
       + (hayAbierto ? 'Los gastos nuevos se cargan en el mes abierto: elígelo arriba en <b>Mes</b>.'
                     : 'Los gastos nuevos van en el mes siguiente.') + '</div>'
       + (hayAbierto ? '' : !puedeCicloMes() ? notaSinPermiso('Abrir el mes siguiente')
+                    : mesSinCerrar() ? '<div class="assumption">Para abrir ' + mesLegible(mesParaAbrir()) + ' primero hay que cerrar '
+                          + mesLegible(mesSinCerrar()) + ' (botón <b>🔒 Cerrar el mes</b>).</div>'
                     : '<button class="btn primary" id="cuAbrirSiguiente" style="width:100%;padding:12px;margin-top:4px;">'
                           + '📅 Abrir ' + mesLegible(mesParaAbrir()) + ' para cargar gastos</button>');
   }
@@ -5196,13 +5248,12 @@ function renderList(body, q){
     card.onclick = ()=>{ openFichaApt(a); };
 
     const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+    btnRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;';
     const tieneTel = getContactOptions(a).length>0;
 
     const btnWa = document.createElement('button');
-    btnWa.className = 'btn ghost';
-    btnWa.style.flex = '1';
-    btnWa.textContent = '💬';
+    btnWa.className = 'btn ghost listaBtn';
+    btnWa.textContent = '💬 Mensaje';
     btnWa.disabled = !tieneTel;
     btnWa.title = tieneTel ? 'WhatsApp' : 'WhatsApp — agrega el teléfono en Editar';
     btnWa.onclick = (e)=>{
@@ -5213,9 +5264,8 @@ function renderList(body, q){
 
     if(proyectos.length>0){
       const btnPagar = document.createElement('button');
-      btnPagar.className = 'btn ghost';
-      btnPagar.style.flex = '1';
-      btnPagar.textContent = '💳';
+      btnPagar.className = 'btn ghost listaBtn';
+      btnPagar.textContent = '💳 Pago proyecto';
       btnPagar.title = 'Pagar — registrar un abono de este apartamento en "'+proyectos[0].nombre+'"';
       btnPagar.onclick = (e)=>{
         e.stopPropagation();
@@ -5227,12 +5277,22 @@ function renderList(body, q){
       btnRow.appendChild(btnPagar);
     }
 
+    // pago del condominio: abre la ficha en la pestaña Pago (registrar lo que pagó el vecino)
+    const btnPagoCondo = document.createElement('button');
+    btnPagoCondo.className = 'btn ghost listaBtn';
+    btnPagoCondo.textContent = '🏢 Pago condominio';
+    btnPagoCondo.title = 'Registrar un pago del condominio de este apartamento';
+    btnPagoCondo.onclick = (e)=>{
+      e.stopPropagation();
+      openFichaApt(a, 'pago');
+    };
+    btnRow.appendChild(btnPagoCondo);
+
     if(tieneDeuda){
       const btnCobrar = document.createElement('button');
-      btnCobrar.className = 'btn primary';
-      btnCobrar.style.flex = '1';
+      btnCobrar.className = 'btn primary listaBtn';
       btnCobrar.style.background = '#c1503f';
-      btnCobrar.textContent = '💰';
+      btnCobrar.textContent = '💰 Cobrar';
       btnCobrar.disabled = !tieneTel;
       btnCobrar.title = !tieneTel ? 'Cobrar — sin teléfono' : ('Cobrar' + (projDebts.length ? ' — incluye deuda de condominio y de proyecto(s)' : ''));
       btnCobrar.onclick = (e)=>{
@@ -6295,7 +6355,7 @@ function renderDeudaTab(body){
 function casillasFormaPago(){ return 5; }
 function formasPagoPorDefecto(){
   // los proyectos se cobran solo en dolares y fuera de la cuenta del condominio
-  const base = [{titulo:'Efectivo $', activo:true}, {titulo:'Zelle', activo:true}, {titulo:'Transferencia $', activo:true}];
+  const base = [{titulo:'Efectivo $', activo:true}, {titulo:'Zelle', activo:true}, {titulo:'Transferencia $', activo:true}, {titulo:'Binance', activo:true}];
   while(base.length < casillasFormaPago()) base.push({titulo:'', activo:false});
   return base;
 }
@@ -6316,6 +6376,11 @@ function escHtml(s){
 }
 function formasPagoActivas(){
   return formasPago.filter(f=>f.activo && f.titulo);
+}
+// todo medio que no sea efectivo deja rastro: se pide el numero de referencia
+function formaPideReferencia(t){
+  const k = claveFormaPago(t);
+  return !!k && !k.includes('efectivo');
 }
 // <option>s de las casillas activas; si el abono que se edita usa un medio que ya no esta
 // activo, se agrega igual para no perderlo al guardar.
@@ -6463,12 +6528,13 @@ function renderProyectoDetalle(body, p){
               +'<select data-edit-forma style="padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
               +opcionesFormaPago(h.forma_pago)
               +'</select>'
+              +'<input type="text" value="'+escHtml(h.nota||'')+'" data-edit-ref placeholder="N.º de referencia" maxlength="60" style="width:120px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
               +'<button class="btn primary" data-save-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Guardar</button>'
               +'<button class="btn ghost" data-cancel-hist style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Cancelar</button>'
               +'</div>';
           }
           const fecha = new Date(h.fecha).toLocaleDateString('es-VE',{day:'2-digit',month:'short',year:'numeric'});
-          return '<div class="comp-item" style="padding-left:14px;"><span class="t">'+fecha+' · '+esc(h.forma_pago||'No especificado')+'</span><span>$'+(h.monto||0).toFixed(2)+' <button class="btn ghost" data-edit-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" style="padding:1px 6px;font-size:10px;margin-left:6px;">✏️</button></span></div>';
+          return '<div class="comp-item" style="padding-left:14px;"><span class="t">'+fecha+' · '+esc(h.forma_pago||'No especificado')+(h.nota && formaPideReferencia(h.forma_pago) ? ' · Ref. '+escHtml(h.nota) : '')+'</span><span>$'+(h.monto||0).toFixed(2)+' <button class="btn ghost" data-edit-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" style="padding:1px 6px;font-size:10px;margin-left:6px;">✏️</button></span></div>';
         }).join('')
       : (()=>{
           const isAdding = editingHist && editingHist.aptId===ap.apt_id && editingHist.idx===-1;
@@ -6478,6 +6544,7 @@ function renderProyectoDetalle(body, p){
               +'<select data-edit-forma style="padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
               +opcionesFormaPago('')
               +'</select>'
+              +'<input type="text" value="" data-edit-ref placeholder="N.º de referencia" maxlength="60" style="width:120px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:11px;">'
               +'<button class="btn primary" data-save-hist data-apt="'+esc(ap.apt_id)+'" data-idx="-1" style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Guardar</button>'
               +'<button class="btn ghost" data-cancel-hist style="padding:3px 8px;font-size:10px;flex:0 0 auto;">Cancelar</button>'
               +'</div>';
@@ -6530,6 +6597,7 @@ function renderProyectoDetalle(body, p){
         <select id="ab_forma">${opcionesFormaPago('')}</select>
       </div>
     </div>
+    <div class="form-row" id="ab_ref_row" style="display:none;"><label>N.º de referencia</label><input id="ab_ref" type="text" maxlength="60" placeholder="Número de la operación"></div>
     <div class="savebar"><button class="btn primary" id="btnAbonar" style="flex:1;">Registrar y avisar por WhatsApp</button></div>
     <div class="savedFlag" id="savedFlagProy"></div>
     <h3 class="section" style="margin-top:16px;">Cargar pagos existentes (en lote)</h3>
@@ -6582,12 +6650,19 @@ function renderProyectoDetalle(body, p){
       const row = saveBtn.closest('.comp-item');
       const montoInput = row.querySelector('[data-edit-monto]');
       const formaSelect = row.querySelector('[data-edit-forma]');
+      const refInput = row.querySelector('[data-edit-ref]');
+      const nuevaRef = refInput ? refInput.value.trim() : '';
+      if(formaPideReferencia(formaSelect.value) && !nuevaRef){
+        alert('Ingresa el número de referencia del pago (' + formaSelect.value + ').');
+        if(refInput) refInput.focus();
+        return;
+      }
       const ap = (p.aportes||[]).find(x=>x.apt_id===aptId);
       if(ap){
         const nuevoMonto = parseFloat(montoInput.value);
         if(idx===-1){
           if(!isNaN(nuevoMonto) && nuevoMonto>0){
-            ap.historial = [{monto: nuevoMonto, fecha:new Date().toISOString(), forma_pago: formaSelect.value, nota:'registro agregado manualmente'}];
+            ap.historial = [{monto: nuevoMonto, fecha:new Date().toISOString(), forma_pago: formaSelect.value, nota: nuevaRef || 'registro agregado manualmente'}];
             ap.monto_pagado = nuevoMonto;
             await saveProyectos();
             refreshRecaudado();
@@ -6595,6 +6670,7 @@ function renderProyectoDetalle(body, p){
         } else if(ap.historial && ap.historial[idx]){
           if(!isNaN(nuevoMonto)) ap.historial[idx].monto = nuevoMonto;
           ap.historial[idx].forma_pago = formaSelect.value;
+          ap.historial[idx].nota = nuevaRef || null;
           ap.monto_pagado = ap.historial.reduce((s,x)=>s+(x.monto||0),0);
           await saveProyectos();
           refreshRecaudado();
@@ -6614,21 +6690,28 @@ function renderProyectoDetalle(body, p){
     pendingPagoAptId = null;
   }
   document.getElementById('btnBackProy').onclick = ()=>{ selectedProyectoId=null; renderSidebar(); };
+  const abForma = document.getElementById('ab_forma');
+  const verRefAbono = ()=>{ document.getElementById('ab_ref_row').style.display = formaPideReferencia(abForma.value) ? '' : 'none'; };
+  abForma.onchange = verRefAbono;
+  verRefAbono();
   document.getElementById('btnAbonar').onclick = async ()=>{
     const aptId = document.getElementById('ab_apt').value;
     const monto = parseFloat(document.getElementById('ab_monto').value);
     const formaPago = document.getElementById('ab_forma').value;
+    const referencia = document.getElementById('ab_ref').value.trim();
     const flag = document.getElementById('savedFlagProy');
     if(!monto || monto<=0){ flag.textContent='Ingresa un monto válido.'; return; }
+    if(formaPideReferencia(formaPago) && !referencia){ flag.textContent='Ingresa el número de referencia del pago ('+formaPago+').'; document.getElementById('ab_ref').focus(); return; }
     const ap = (p.aportes||[]).find(x=>x.apt_id===aptId);
     if(!ap){ flag.textContent='Apartamento no encontrado en este proyecto.'; return; }
     ap.monto_pagado = (ap.monto_pagado||0) + monto;
     ap.historial = ap.historial||[];
-    ap.historial.push({monto, fecha:new Date().toISOString(), forma_pago:formaPago});
+    ap.historial.push({monto, fecha:new Date().toISOString(), forma_pago:formaPago, nota: formaPideReferencia(formaPago) ? referencia : null});
+    document.getElementById('ab_ref').value = '';
     await saveProyectos();
     const apt = apartments.find(a=>a.id===aptId);
     const pendiente = Math.max(0, (ap.monto_aporte||0) - (ap.monto_pagado||0));
-    const msg = ()=>'Hola '+(apt?apt.propietario:'')+', se registró un abono de $'+monto.toFixed(2)+' ('+formaPago+') para el proyecto "'+p.nombre+'" en el apartamento '+aptId+'. Tu saldo pendiente en este proyecto es $'+pendiente.toFixed(2)+'. Número personal — dudas por el chat general, administración o abogada. -- Junta de Condominio Hatillo Hill';
+    const msg = ()=>'Hola '+(apt?apt.propietario:'')+', se registró un abono de $'+monto.toFixed(2)+' ('+formaPago+(formaPideReferencia(formaPago) ? ', ref. '+referencia : '')+') para el proyecto "'+p.nombre+'" en el apartamento '+aptId+'. Tu saldo pendiente en este proyecto es $'+pendiente.toFixed(2)+'. Número personal — dudas por el chat general, administración o abogada. -- Junta de Condominio Hatillo Hill';
     const tieneTel = apt && getContactOptions(apt).length>0;
     if(tieneTel) sendWhatsAppToApt(apt, msg);
     flag.textContent = tieneTel ? '✓ Abono registrado, abriendo WhatsApp...' : '✓ Abono registrado (sin teléfono para avisar; agrégalo en Editar)';
@@ -7976,7 +8059,12 @@ checkMobile();
 
 // ---------- init ----------
 async function init(){
-  db = window.supabase.createClient(SB_URL, SB_KEY, {auth:{persistSession:true, autoRefreshToken:true}});
+  // la sesion vive solo en esta pestaña (sessionStorage): al cerrar la pestaña o el navegador
+  // se pierde y la proxima vez que se abra el sistema pide la clave. Antes quedaba en
+  // localStorage, compartida con el portal y recordada para siempre: se borra esa copia vieja.
+  try{ localStorage.removeItem('sb-' + new URL(SB_URL).hostname.split('.')[0] + '-auth-token'); }catch(e){}
+  db = window.supabase.createClient(SB_URL, SB_KEY, {auth:{persistSession:true, autoRefreshToken:true,
+    storage: window.sessionStorage, storageKey: 'hh-sistema-auth'}});
   const btn = document.getElementById('btnSesion');
   if(btn) btn.addEventListener('click', ()=>{ if(miPerfil) salirDeSesion(); else pantallaLogin(true); });
 
