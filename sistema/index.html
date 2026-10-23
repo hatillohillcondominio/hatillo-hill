@@ -452,7 +452,32 @@ let proyectos = JSON.parse(JSON.stringify(RAW_DATA.proyectos_especiales||[]));
 let multas = JSON.parse(JSON.stringify(RAW_DATA.multas||[]));
 let whatsappTemplateMulta = 'Hola {nombre}, la Junta de Condominio de Hatillo Hill le informa que el apartamento {id} incurrió en una falta al Artículo {articulo} del Reglamento ({falta}). Monto de la multa: ${monto}. De no ser cancelada, este monto será cargado a su recibo de condominio. -- Junta de Condominio Hatillo Hill';
 let whatsappTemplateGeneral = 'Hola {nombre}, le saluda la Junta de Condominio de Hatillo Hill. Cualquier consulta sobre el apartamento {id}, quedamos atentos.';
-let whatsappTemplateCobro = 'Hola {nombre}, le recordamos que el apartamento {id} en Hatillo Hill presenta una deuda de ${monto} correspondiente a {meses} mes(es) ({dias} días aprox.). Agradecemos su pago a la brevedad. -- Junta de Condominio';
+let whatsappTemplateCobro = 'Hola {nombre}, le recordamos que el apartamento {id} en Hatillo Hill presenta una deuda de ${monto} correspondiente a {meses} recibo(s). Agradecemos su pago a la brevedad. -- Junta de Condominio';
+// mensajes que antes estaban fijos en el codigo: ahora se editan en Config > Configurar WhatsApp
+// y se guardan en configuracion con su clave. Vacio = vuelve al texto de fabrica.
+const PLANTILLAS_WA_EXTRA = [
+  {clave: 'whatsapp_tpl_al_dia', nombre: 'Cobrar a un apartamento al día', vars: '{nombre}, {id}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill sobre el apartamento {id}.'},
+  {clave: 'whatsapp_tpl_proyectos', nombre: 'Línea que se agrega al cobro si debe proyectos', vars: '{proyectos} (ej. "Pozo de Agua: $50.00 pendiente")',
+   defecto: 'También tiene saldo pendiente en proyecto(s) especiales: {proyectos}.'},
+  {clave: 'whatsapp_tpl_multa_pie', nombre: 'Pie del mensaje de multa', vars: '{portal}',
+   defecto: 'La multa se sumará a su próximo recibo de condominio. Si desea pagarla antes, repórtela en el portal y quedará como abono: {portal}'},
+  {clave: 'whatsapp_tpl_abono_proyecto', nombre: 'Abono a un proyecto (Pozo de Agua y otros)',
+   vars: '{nombre}, {id}, {monto}, {forma}, {referencia} (sale como ", ref. 123" solo si la forma de pago la pide), {proyecto}, {pendiente}',
+   defecto: 'Hola {nombre}, se registró un abono de ${monto} ({forma}{referencia}) para el proyecto "{proyecto}" en el apartamento {id}. Tu saldo pendiente en este proyecto es ${pendiente}. -- Junta de Condominio Hatillo Hill'},
+  {clave: 'whatsapp_tpl_recibo', nombre: 'Reenviar un recibo',
+   vars: '{nombre}, {id}, {mes}, {cuota}, {saldo_anterior} (sale como ", saldo anterior $X" solo si hay), {total}, {vence} (sale como ". Vence el dd/mm/aaaa"), {portal}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Aviso de cobro de {mes} del apartamento {id}: cuota del mes ${cuota}{saldo_anterior}. Total adeudado hoy: ${total}{vence}. Gracias.'},
+  {clave: 'whatsapp_tpl_acceso_nuevo', nombre: 'Acceso nuevo al portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le creamos su acceso al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'},
+  {clave: 'whatsapp_tpl_acceso_clave', nombre: 'Clave nueva del portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le asignamos una clave nueva para el portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'}
+];
+let plantillasWA = {};
+function plantillaWA(clave){
+  const guardada = plantillasWA[clave];
+  return guardada && guardada.trim() ? guardada : PLANTILLAS_WA_EXTRA.find(p=>p.clave === clave).defecto;
+}
 let recordatorioFrecuenciaDias = 15;
 let preferWhatsappEscritorio = false;
 let formasPago = formasPagoPorDefecto();
@@ -786,6 +811,7 @@ async function cargarDesdeBase(){
   if(conf.whatsapp_tpl_general) whatsappTemplateGeneral = conf.whatsapp_tpl_general;
   if(conf.whatsapp_tpl_cobro)   whatsappTemplateCobro   = conf.whatsapp_tpl_cobro;
   if(conf.whatsapp_tpl_multa)   whatsappTemplateMulta   = conf.whatsapp_tpl_multa;
+  PLANTILLAS_WA_EXTRA.forEach(p=>{ if(conf[p.clave] != null) plantillasWA[p.clave] = conf[p.clave]; });
   if(conf.recordatorio_frecuencia_dias) recordatorioFrecuenciaDias = parseInt(conf.recordatorio_frecuencia_dias,10) || 15;
   preferWhatsappEscritorio = conf.prefer_whatsapp_escritorio === 'true';
   if(conf.formas_pago_proyectos){
@@ -1502,11 +1528,11 @@ function buildCobroMessage(a, d, projDebts){
     const dias = d.meses!=null ? Math.round(d.meses*30) : '';
     msg = fillTemplate(whatsappTemplateCobro, {nombre:a.propietario||'', id:a.id, monto:d.monto!=null?d.monto:'-', meses, dias});
   } else {
-    msg = 'Hola '+(a.propietario||'')+', le escribe la Junta de Condominio de Hatillo Hill sobre el apartamento '+a.id+'.';
+    msg = fillTemplate(plantillaWA('whatsapp_tpl_al_dia'), {nombre:a.propietario||'', id:a.id});
   }
   if(projDebts.length){
     const lineas = projDebts.map(pd=>pd.nombre+': $'+pd.monto.toFixed(2)+' pendiente').join(' · ');
-    msg += ' También tiene saldo pendiente en proyecto(s) especiales: '+lineas+'.';
+    msg += ' ' + fillTemplate(plantillaWA('whatsapp_tpl_proyectos'), {proyectos: lineas});
   }
   return msg;
 }
@@ -3363,12 +3389,12 @@ function selloPagado(saldoRecibo){
 
 function mensajeRecibo(d){
   const rc = d.rc;
-  return 'Hola ' + (d.apt.propietario || '') + ', le escribe la Junta de Condominio de Hatillo Hill. '
-    + 'Aviso de cobro de ' + mesLegible(rc.periodo_id) + ' del apartamento ' + rc.apartamento_id + ': '
-    + 'cuota del mes $' + Number(rc.monto_total).toFixed(2)
-    + (Number(rc.saldo_anterior) > 0.005 ? ', saldo anterior $' + Number(rc.saldo_anterior).toFixed(2) : '')
-    + '. Total adeudado hoy: $' + d.deudaTotal.toFixed(2)
-    + (rc.vence_el ? '. Vence el ' + new Date(rc.vence_el + 'T12:00:00').toLocaleDateString('es-VE') : '') + '. Gracias.';
+  return fillTemplate(plantillaWA('whatsapp_tpl_recibo'), {
+    nombre: d.apt.propietario || '', id: rc.apartamento_id, mes: mesLegible(rc.periodo_id), cuota: Number(rc.monto_total).toFixed(2),
+    saldo_anterior: Number(rc.saldo_anterior) > 0.005 ? ', saldo anterior $' + Number(rc.saldo_anterior).toFixed(2) : '',
+    total: d.deudaTotal.toFixed(2), vence: rc.vence_el ? '. Vence el ' + new Date(rc.vence_el + 'T12:00:00').toLocaleDateString('es-VE') : '',
+    portal: new URL('portal.html', location.href).href
+  });
 }
 
 async function abrirRecibo(reciboId){
@@ -4222,11 +4248,9 @@ function claveTemporal(){
 function urlPortal(){ return new URL('portal.html', location.href).href; }
 
 function mensajeAcceso(nombre, aptId, correo, clave, esNueva){
-  return 'Hola ' + (nombre || '') + ', le escribe la Junta de Condominio de Hatillo Hill. '
-    + (esNueva ? 'Le creamos su acceso al portal del condominio' : 'Le asignamos una clave nueva para el portal del condominio')
-    + (aptId ? ' (apartamento ' + aptId + ')' : '') + '. Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\n'
-    + 'Entre aquí: ' + urlPortal() + '\nCorreo: ' + correo + '\nClave: ' + clave + '\n\n'
-    + 'Guarde esta clave; si la olvida, pídala a la Junta. Gracias.';
+  let tpl = plantillaWA(esNueva ? 'whatsapp_tpl_acceso_nuevo' : 'whatsapp_tpl_acceso_clave');
+  if(!aptId) tpl = tpl.replace(/ ?\(apartamento \{id\}\)/, '');
+  return fillTemplate(tpl, {nombre: nombre || '', id: aptId || '', portal: urlPortal(), correo, clave});
 }
 
 async function llamarUsuarios(cuerpo){
@@ -6094,7 +6118,10 @@ function renderConfigTab(body){
       <div class="form-row"><label>Plantilla de multa</label>
         <textarea id="tplMulta" style="width:100%;min-height:60px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px;font-size:12px;">${esc(whatsappTemplateMulta)}</textarea>
       </div>
-      <div class="assumption">Variables: {nombre}, {id}, {monto}, {meses}, {dias} (aprox. meses×30) para cobro; {articulo}, {falta} para multas.</div>
+      <div class="assumption">Variables: {nombre}, {id}, {monto}, {meses} (recibos pendientes), {dias} (aprox. meses×30) para cobro; {articulo}, {falta} para multas.</div>
+      ${PLANTILLAS_WA_EXTRA.map(p=>`<div class="form-row"><label>${esc(p.nombre)}</label>
+        <textarea data-tpl-extra="${p.clave}" style="width:100%;min-height:70px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px;font-size:12px;">${esc(plantillaWA(p.clave))}</textarea>
+      </div><div class="assumption" style="margin-top:-2px;">Variables: ${esc(p.vars)}. Si lo dejas vacío vuelve al texto original.</div>`).join('')}
       <div class="form-row two">
         <div><label>Recordar cada (días)</label><input id="frecDias" type="number" min="1" value="${recordatorioFrecuenciaDias}"></div>
         <div style="display:flex;align-items:flex-end;padding-bottom:8px;">
@@ -6250,6 +6277,13 @@ function renderConfigTab(body){
     await saveWhatsappTemplateGeneral(document.getElementById('tplGeneral').value);
     await saveWhatsappTemplateCobro(document.getElementById('tplCobro').value);
     await saveWhatsappTemplateMulta(document.getElementById('tplMulta').value);
+    for(const ta of document.querySelectorAll('[data-tpl-extra]')){
+      const clave = ta.dataset.tplExtra, def = PLANTILLAS_WA_EXTRA.find(p=>p.clave === clave).defecto;
+      // si quedo igual al de fabrica se guarda vacio, asi un cambio futuro del texto original le llega
+      const valor = ta.value.trim() === def.trim() ? '' : ta.value;
+      plantillasWA[clave] = valor;
+      try{ await guardarConfig(clave, valor); }catch(e){ console.error(e); }
+    }
     await saveRecordatorioFrecuencia(parseInt(document.getElementById('frecDias').value,10) || 15);
     await savePreferWhatsappEscritorio(document.getElementById('chkEscritorio').checked);
     const flag = document.getElementById('flagConfigWA');
@@ -6345,8 +6379,7 @@ function multaEstadoBadge(m){
 function buildMultaMsg(m){
   const apt = apartments.find(a=>a.id===m.apt_id);
   return fillTemplate(whatsappTemplateMulta, {nombre: apt?apt.propietario:'', id: m.apt_id, articulo: m.articulos_label, falta: m.descripcion, monto: (m.monto||0).toFixed(2)})
-    + '\n\nLa multa se sumará a su próximo recibo de condominio. Si desea pagarla antes, repórtela en el portal y quedará como abono: '
-    + new URL('portal.html', location.href).href;
+    + '\n\n' + fillTemplate(plantillaWA('whatsapp_tpl_multa_pie'), {portal: new URL('portal.html', location.href).href});
 }
 function multaCardHtml(m){
   const apt = apartments.find(a=>a.id===m.apt_id);
@@ -6989,7 +7022,8 @@ function renderProyectoDetalle(body, p){
     if(!guardado) return;
     const apt = apartments.find(a=>a.id===aptId);
     const pendiente = Math.max(0, (ap.monto_aporte||0) - (ap.monto_pagado||0));
-    const msg = ()=>'Hola '+(apt?apt.propietario:'')+', se registró un abono de $'+monto.toFixed(2)+' ('+formaPago+(formaPideReferencia(formaPago) ? ', ref. '+referencia : '')+') para el proyecto "'+p.nombre+'" en el apartamento '+aptId+'. Tu saldo pendiente en este proyecto es $'+pendiente.toFixed(2)+'. Número personal — dudas por el chat general, administración o abogada. -- Junta de Condominio Hatillo Hill';
+    const msg = ()=>fillTemplate(plantillaWA('whatsapp_tpl_abono_proyecto'), {nombre: apt?apt.propietario:'', id: aptId, monto: monto.toFixed(2),
+      forma: formaPago, referencia: formaPideReferencia(formaPago) ? ', ref. '+referencia : '', proyecto: p.nombre, pendiente: pendiente.toFixed(2)});
     const tieneTel = apt && getContactOptions(apt).length>0;
     if(tieneTel) sendWhatsAppToApt(apt, msg);
     flag.textContent = tieneTel ? '✓ Abono registrado, abriendo WhatsApp...' : '✓ Abono registrado (sin teléfono para avisar; agrégalo en Editar)';
