@@ -771,6 +771,8 @@ async function cargarDesdeBase(){
       historial: hist
     });
   });
+  // firma de lo leido: al guardar solo se reescriben los aportes que cambiaron
+  Object.values(aportesPorProy).forEach(lista=>lista.forEach(ap=>{ ap._firma = firmaAporte(ap); }));
   proyectos = (proys.data||[]).map(p => ({
     id:p.id, nombre:p.nombre, descripcion:p.descripcion,
     presupuesto_total:Number(p.presupuesto_total)||0, reparto:p.reparto,
@@ -854,27 +856,42 @@ async function guardarProyectosEnBase(){
       proyId = p.id = data.id;
     }
     for(const ap of (p.aportes||[])){
-      const { data: fila, error } = await db.from('proyecto_aportes')
-        .upsert({proyecto_id: proyId, apartamento_id: ap.apt_id, monto_aporte: ap.monto_aporte||0},
-                {onConflict: 'proyecto_id,apartamento_id'})
-        .select('id').single();
-      if(error) throw new Error(error.message);
-      ap._id = fila.id;
-      // los abonos se reescriben enteros: son pocos y no tienen identidad propia en la app
-      await db.from('proyecto_abonos').delete().eq('aporte_id', ap._id);
-      const hist = (ap.historial||[]).filter(h => (h.monto||0) > 0);
-      if(hist.length){
-        const { error: e2 } = await db.from('proyecto_abonos').insert(hist.map(h=>({
-          aporte_id: ap._id,
+      // solo los aportes que cambiaron desde la ultima lectura o guardado
+      const firma = firmaAporte(ap);
+      if(ap._id && ap._firma === firma) continue;
+      // aporte y abonos van juntos en una transaccion (guardar_aporte, sql/18):
+      // si la base rechaza algo, no se pierde ningun abono
+      const { data, error } = await db.rpc('guardar_aporte', {
+        p_proyecto: proyId, p_apto: ap.apt_id, p_monto_aporte: ap.monto_aporte||0,
+        p_abonos: (ap.historial||[]).filter(h => (h.monto||0) > 0).map(h=>({
           fecha: (h.fecha||'').slice(0,10) || null,
           monto: h.monto,
           forma_pago: h.forma_pago || null,
           referencia: h.nota || null
-        })));
-        if(e2) throw new Error(e2.message);
+        }))
+      });
+      if(error){
+        await recargarProyectosDesdeBase();
+        throw new Error(traducirErrorPago(error.message));
       }
+      ap._id = data;
+      ap._firma = firma;
     }
   }
+}
+function firmaAporte(ap){
+  return JSON.stringify([ap.monto_aporte||0, (ap.historial||[]).filter(h => (h.monto||0) > 0)
+    .map(h=>[(h.fecha||'').slice(0,10), Number(h.monto), h.forma_pago||null, h.nota||null])]);
+}
+// mensajes de la base (sql/18) en palabras del usuario
+function traducirErrorPago(msg){
+  if(/ux_abono_referencia|ux_pago_referencia/.test(msg)) return 'Esa referencia ya está registrada en otro pago. No se registra dos veces el mismo pago.';
+  return msg;
+}
+// si la base rechazo un abono, lo que esta en pantalla ya no coincide con la base:
+// se vuelve a leer para no mostrar un pago que no quedo guardado
+async function recargarProyectosDesdeBase(){
+  try{ await cargarDesdeBase(); }catch(e){ console.error(e); }
 }
 
 async function guardarConfig(clave, valor){
@@ -1342,10 +1359,13 @@ async function saveMalet(m){
   catch(e){ console.error(e); }
   saveFullSnapshot();
 }
+// devuelve false si la base rechazo el guardado (quien llama no debe avisar "registrado")
 async function saveProyectos(){
+  let ok = true;
   try{ await guardarProyectosEnBase(); }
-  catch(e){ console.error(e); alert('No se pudo guardar el proyecto: ' + (e.message||e)); }
+  catch(e){ ok = false; console.error(e); alert('No se pudo guardar el proyecto: ' + (e.message||e)); renderSidebar(); }
   saveFullSnapshot();
+  return ok;
 }
 async function saveMultas(){
   try{ await guardarMultasEnBase(); }
@@ -3770,7 +3790,11 @@ function renderCuentasCompleto(body){
     const monto = parseFloat(document.getElementById('pMonto').value);
     if(!(monto > 0)){ alert('Escribe el monto del pago.'); return; }
     const btn = document.getElementById('pRegistrar');
+    if(btn.disabled) return;
     btn.disabled = true;
+    const ok = await validarPagoCondominio(document.getElementById('pApt').value, monto,
+      document.getElementById('pFecha').value, document.getElementById('pRef').value);
+    if(!ok){ btn.disabled = false; return; }
     const { error } = await db.from('pagos').insert({
       apartamento_id: document.getElementById('pApt').value,
       fecha: document.getElementById('pFecha').value || null,
@@ -3784,7 +3808,7 @@ function renderCuentasCompleto(body){
       confirmado_en: new Date().toISOString()
     });
     btn.disabled = false;
-    if(error){ alert('No se pudo registrar el pago: ' + error.message); return; }
+    if(error){ alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
     document.getElementById('pMonto').value = '';
     document.getElementById('pRef').value = '';
     await refrescarCuentas();
@@ -5462,6 +5486,36 @@ function pintarCargosPendientes(apt){
     });
 }
 
+// Antes de guardar un pago del condominio:
+// - la misma referencia en el mismo apartamento no se registra dos veces (bloquea);
+// - el mismo monto el mismo dia pide confirmar que es otro pago;
+// - si el pago supera la deuda es un pago adelantado: se confirma DOS veces.
+async function validarPagoCondominio(aptId, monto, fecha, referencia){
+  const ref = String(referencia||'').trim();
+  const { data: previos, error } = await db.from('pagos')
+    .select('fecha, monto, referencia, estado')
+    .eq('apartamento_id', aptId).neq('estado', 'rechazado');
+  if(error){ alert('No se pudo revisar si el pago ya existe: ' + error.message); return false; }
+  const claveRef = s => String(s||'').trim().toLowerCase().replace(/\s+/g,'');
+  if(ref && (previos||[]).some(p=>p.referencia && claveRef(p.referencia)===claveRef(ref))){
+    alert('Ya hay un pago de ' + aptId + ' con la referencia ' + ref + '.\nNo se registra dos veces el mismo pago.');
+    return false;
+  }
+  const igual = (previos||[]).find(p=>Math.abs(Number(p.monto)-monto) < 0.005 && p.fecha === (fecha||new Date().toISOString().slice(0,10)));
+  if(igual && !confirm('Ya hay un pago de ' + aptId + ' por ' + fmtMoney(monto) + ' con fecha ' + igual.fecha + '.\n\n¿Es un pago DISTINTO y no el mismo cargado otra vez?')) return false;
+  const apt = apartments.find(a=>a.id===aptId);
+  const d = apt ? findDeuda(apt) : null;
+  const deuda = d ? Number(d.monto)||0 : 0;
+  if(monto > deuda + 0.005){
+    const adelanto = Math.round((monto - deuda) * 100) / 100;
+    const txt1 = (deuda > 0.005 ? aptId + ' debe ' + fmtMoney(deuda) + '.' : aptId + ' no tiene deuda con el condominio.')
+      + '\nCon este pago de ' + fmtMoney(monto) + ' quedan ' + fmtMoney(adelanto) + ' como PAGO ADELANTADO (saldo a favor).\n\n¿Es un pago adelantado?';
+    if(!confirm(txt1)) return false;
+    if(!confirm('Confirma otra vez para evitar errores:\n\nregistrar ' + fmtMoney(adelanto) + ' a favor de ' + aptId + ' como pago adelantado.')) return false;
+  }
+  return true;
+}
+
 function renderFichaPago(pane){
   if(!puedeEditar()){ fichaSinPermiso(pane); return; }
   if(!puedeDinero()){
@@ -5491,7 +5545,11 @@ function renderFichaPago(pane){
     const monto = parseFloat(document.getElementById('fpMonto').value);
     if(!(monto > 0)){ alert('Escribe el monto del pago.'); return; }
     const btn = document.getElementById('fpRegistrar');
+    if(btn.disabled) return;
     btn.disabled = true; btn.textContent = 'Registrando…';
+    const ok = await validarPagoCondominio(apt.id, monto,
+      document.getElementById('fpFecha').value, document.getElementById('fpRef').value);
+    if(!ok){ btn.disabled = false; btn.textContent = '💵 Registrar pago'; return; }
     const { error } = await db.from('pagos').insert({
       apartamento_id: apt.id,
       fecha: document.getElementById('fpFecha').value || null,
@@ -5504,7 +5562,7 @@ function renderFichaPago(pane){
       confirmado_por: miPerfil.id,
       confirmado_en: new Date().toISOString()
     });
-    if(error){ btn.disabled = false; btn.textContent = '💵 Registrar pago'; alert('No se pudo registrar el pago: ' + error.message); return; }
+    if(error){ btn.disabled = false; btn.textContent = '💵 Registrar pago'; alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
     await recargarDeuda();
     await refrescarTrasMovimiento();
     irAFichaTab('resumen');
@@ -6660,6 +6718,14 @@ function renderProyectoDetalle(body, p){
       const ap = (p.aportes||[]).find(x=>x.apt_id===aptId);
       if(ap){
         const nuevoMonto = parseFloat(montoInput.value);
+        // al corregir tampoco se puede dejar pagado mas que el aporte
+        const otros = (ap.historial||[]).reduce((s,x,i)=> i===idx ? s : s+(x.monto||0), 0);
+        const totalNuevo = (idx===-1 ? 0 : otros) + (isNaN(nuevoMonto) ? 0 : nuevoMonto);
+        // (los aportes historicos pagados unos centavos de mas por redondeo se pueden corregir sin subir)
+        if(totalNuevo > (ap.monto_aporte||0) + 0.005 && totalNuevo > (ap.monto_pagado||0) + 0.005){
+          alert('Con ese monto ' + aptId + ' quedaría pagando $' + totalNuevo.toFixed(2) + ', más que su aporte de $' + (ap.monto_aporte||0).toFixed(2) + '.');
+          return;
+        }
         if(idx===-1){
           if(!isNaN(nuevoMonto) && nuevoMonto>0){
             ap.historial = [{monto: nuevoMonto, fecha:new Date().toISOString(), forma_pago: formaSelect.value, nota: nuevaRef || 'registro agregado manualmente'}];
@@ -6704,11 +6770,29 @@ function renderProyectoDetalle(body, p){
     if(formaPideReferencia(formaPago) && !referencia){ flag.textContent='Ingresa el número de referencia del pago ('+formaPago+').'; document.getElementById('ab_ref').focus(); return; }
     const ap = (p.aportes||[]).find(x=>x.apt_id===aptId);
     if(!ap){ flag.textContent='Apartamento no encontrado en este proyecto.'; return; }
+    // en un proyecto no se paga de mas: con el aporte saldado ya no se aceptan abonos
+    const pendienteAntes = Math.round(((ap.monto_aporte||0) - (ap.monto_pagado||0)) * 100) / 100;
+    if(pendienteAntes <= 0.005){ flag.textContent = aptId + ' ya pagó todo su aporte en este proyecto: no se pueden registrar más abonos.'; return; }
+    if(monto > pendienteAntes + 0.005){ flag.textContent = 'El abono supera lo que debe ' + aptId + ' ($' + pendienteAntes.toFixed(2) + '). Corrige el monto.'; return; }
+    const claveRef = s => String(s||'').trim().toLowerCase().replace(/\s+/g,'');
+    if(formaPideReferencia(formaPago) && (p.aportes||[]).some(x=>(x.historial||[]).some(h=>h.nota && claveRef(h.nota)===claveRef(referencia)))){
+      flag.textContent = 'Ya hay un abono con la referencia ' + referencia + ' en este proyecto. No se registra dos veces.'; return;
+    }
+    const hoy = new Date().toISOString().slice(0,10);
+    if((ap.historial||[]).some(h=>Math.abs((h.monto||0)-monto) < 0.005 && String(h.fecha||'').slice(0,10)===hoy)
+       && !confirm('Hoy ya se registró un abono de $' + monto.toFixed(2) + ' de ' + aptId + '.\n\n¿Es un pago DISTINTO y no el mismo cargado otra vez?')) return;
+    const btnAb = document.getElementById('btnAbonar');
+    if(btnAb.disabled) return;
+    btnAb.disabled = true; btnAb.textContent = 'Registrando…';
     ap.monto_pagado = (ap.monto_pagado||0) + monto;
     ap.historial = ap.historial||[];
     ap.historial.push({monto, fecha:new Date().toISOString(), forma_pago:formaPago, nota: formaPideReferencia(formaPago) ? referencia : null});
     document.getElementById('ab_ref').value = '';
-    await saveProyectos();
+    document.getElementById('ab_monto').value = '';
+    let guardado = false;
+    try{ guardado = await saveProyectos(); }
+    finally{ btnAb.disabled = false; btnAb.textContent = 'Registrar y avisar por WhatsApp'; }
+    if(!guardado) return;
     const apt = apartments.find(a=>a.id===aptId);
     const pendiente = Math.max(0, (ap.monto_aporte||0) - (ap.monto_pagado||0));
     const msg = ()=>'Hola '+(apt?apt.propietario:'')+', se registró un abono de $'+monto.toFixed(2)+' ('+formaPago+(formaPideReferencia(formaPago) ? ', ref. '+referencia : '')+') para el proyecto "'+p.nombre+'" en el apartamento '+aptId+'. Tu saldo pendiente en este proyecto es $'+pendiente.toFixed(2)+'. Número personal — dudas por el chat general, administración o abogada. -- Junta de Condominio Hatillo Hill';

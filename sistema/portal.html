@@ -486,7 +486,9 @@ function formularioPago(){
     });
     if(error){
       b.disabled = false; b.textContent = 'Enviar reporte';
-      err.textContent = 'No se pudo enviar: ' + error.message;
+      err.textContent = /ux_pago_referencia/.test(error.message)
+        ? 'Ya reportaste un pago con esa referencia. Si fue un error, escríbele a la junta.'
+        : 'No se pudo enviar: ' + error.message;
       return;
     }
     // avisar a la junta por correo; si falla, el pago igual quedo reportado
