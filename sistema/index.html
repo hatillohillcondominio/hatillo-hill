@@ -4451,6 +4451,36 @@ function xlsContacto(a){
     'Teléfono inquilino': a.inquilino_telefono || '', 'Correo inquilino': a.inquilino_correo || ''
   };
 }
+// fuera del reporte de propietarios basta con el apartamento y el nombre
+function xlsNombre(aptos, id){ return (aptos[id] || {}).propietario || ''; }
+// fila TOTAL al pie de una hoja: suma las columnas de montos ($ o Bs) y cuenta los registros
+function xlsConTotal(filas, primera, etiqueta){
+  if(!filas.length) return filas;
+  const tot = {};
+  tot[primera] = etiqueta || 'TOTAL (' + filas.length + ')';
+  Object.keys(filas[0]).filter(k=>/(\$|Bs)$/.test(k)).forEach(k=>{
+    tot[k] = xlsNum(filas.reduce((s, f)=>s + (typeof f[k] === 'number' ? f[k] : 0), 0));
+  });
+  return filas.concat([tot]);
+}
+// cuantos pagos y cuanto suma cada forma de pago, para cuadrar el corte con el banco
+function xlsPorForma(filas, grupo){
+  const m = {};
+  filas.forEach(f=>{
+    const k = (grupo ? f[grupo] + '|' : '') + (f['Forma de pago'] || 'Sin especificar');
+    const x = m[k] = m[k] || {g: grupo ? f[grupo] : '', forma: f['Forma de pago'] || 'Sin especificar', n: 0, total: 0};
+    x.n++; x.total += Number(f['Monto $']) || 0;
+  });
+  const out = Object.values(m).sort((a, b)=>String(a.g).localeCompare(String(b.g)) || b.total - a.total).map(x=>{
+    const r = {};
+    if(grupo) r[grupo] = x.g;
+    r['Forma de pago'] = x.forma; r['Nº de pagos'] = x.n; r['Total $'] = xlsNum(x.total);
+    return r;
+  });
+  const conTotal = xlsConTotal(out, grupo || 'Forma de pago', 'TOTAL');
+  if(out.length) conTotal[conTotal.length - 1]['Nº de pagos'] = out.reduce((s, r)=>s + r['Nº de pagos'], 0);
+  return conTotal;
+}
 async function xlsAptos(){
   const filas = await xlsTraer('apartamentos', '*', 'id');
   const m = {};
@@ -4484,29 +4514,35 @@ async function xlsPropietarios(){
 }
 
 async function xlsDeudaRecibos(){
-  const [aptos, saldos, recibos, apl] = await Promise.all([
+  const [aptos, saldos, recibos, apl, pagos] = await Promise.all([
     xlsAptos(), xlsTraer('v_saldo_apartamento', '*', 'apartamento_id'),
     xlsTraer('recibos', 'id, periodo_id, apartamento_id, monto_total, emitido_en, vence_el', 'periodo_id'),
-    xlsTraer('aplicaciones_pago', 'recibo_id, monto')
+    xlsTraer('aplicaciones_pago', 'recibo_id, monto'), xlsTraer('pagos', '*', 'fecha')
   ]);
   const aplicado = {};
   apl.forEach(x=>{ aplicado[x.recibo_id] = (aplicado[x.recibo_id] || 0) + Number(x.monto); });
   const deudores = saldos.filter(s=>Number(s.saldo) > 0.005).sort((x, y)=>Number(y.saldo) - Number(x.saldo));
-  const filas = deudores.map(s=>Object.assign({'Apartamento': s.apartamento_id}, xlsContacto(aptos[s.apartamento_id]), {
+  const filas = deudores.map(s=>Object.assign({'Apartamento': s.apartamento_id, 'Propietario': xlsNombre(aptos, s.apartamento_id)}, {
     'Recibos pendientes': Number(s.recibos_pendientes) || 0,
     'Mes más viejo': s.recibo_mas_viejo ? mesLegible(String(s.recibo_mas_viejo).slice(0, 7)) : '',
     'Facturado $': xlsNum(s.facturado), 'Pagado $': xlsNum(s.pagado), 'Deuda $': xlsNum(s.saldo)
   }));
   if(filas.length) filas.push({'Apartamento': 'TOTAL', 'Recibos pendientes': filas.reduce((t, f)=>t + f['Recibos pendientes'], 0),
+    'Facturado $': xlsNum(deudores.reduce((t, s)=>t + Number(s.facturado), 0)), 'Pagado $': xlsNum(deudores.reduce((t, s)=>t + Number(s.pagado), 0)),
     'Deuda $': xlsNum(deudores.reduce((t, s)=>t + Number(s.saldo), 0))});
   const pend = recibos.map(r=>({r, p: Math.round((Number(r.monto_total) - (aplicado[r.id] || 0)) * 100) / 100})).filter(x=>x.p > 0.005);
   const detalle = pend.map(({r, p})=>{
-    const a = aptos[r.apartamento_id] || {};
-    return {'Apartamento': r.apartamento_id, 'Propietario': a.propietario || '', 'Teléfono': a.telefono || '', 'Correo': a.correo || '',
+    return {'Apartamento': r.apartamento_id, 'Propietario': xlsNombre(aptos, r.apartamento_id),
       'Mes': mesLegible(r.periodo_id), 'Emitido': xlsFecha(r.emitido_en ? String(r.emitido_en).slice(0, 10) : ''), 'Vence': xlsFecha(r.vence_el),
       'Monto recibo $': xlsNum(r.monto_total), 'Abonado $': xlsNum(aplicado[r.id] || 0), 'Pendiente $': xlsNum(p)};
   });
-  return [['Deudores condominio', filas], ['Recibos pendientes', detalle]];
+  // cada pago confirmado, para validar el "Pagado $" de los deudores
+  const pagosDet = pagos.filter(p=>p.estado === 'confirmado')
+    .sort((x, y)=>x.apartamento_id.localeCompare(y.apartamento_id) || String(x.fecha).localeCompare(String(y.fecha)))
+    .map(p=>({'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id), 'Fecha': xlsFecha(p.fecha),
+      'Forma de pago': p.forma_pago || '', 'Banco': p.banco || '', 'Referencia': p.referencia || '', 'Monto $': xlsNum(p.monto)}));
+  return [['Deudores condominio', filas], ['Recibos pendientes', xlsConTotal(detalle, 'Apartamento')],
+    ['Pagos condominio', xlsConTotal(pagosDet, 'Apartamento')], ['Pagos por forma', xlsPorForma(pagosDet)]];
 }
 
 async function xlsDeudaProyectos(){
@@ -4521,7 +4557,7 @@ async function xlsDeudaProyectos(){
   const pendiente = ap=>Math.round((Number(ap.monto_aporte) - (pagado[ap.id] || 0)) * 100) / 100;
   const deudores = aportes.filter(ap=>pendiente(ap) > 0.005)
     .sort((x, y)=>nombreProy(x.proyecto_id).localeCompare(nombreProy(y.proyecto_id)) || x.apartamento_id.localeCompare(y.apartamento_id))
-    .map(ap=>Object.assign({'Proyecto': nombreProy(ap.proyecto_id), 'Apartamento': ap.apartamento_id}, xlsContacto(aptos[ap.apartamento_id]), {
+    .map(ap=>Object.assign({'Proyecto': nombreProy(ap.proyecto_id), 'Apartamento': ap.apartamento_id, 'Propietario': xlsNombre(aptos, ap.apartamento_id)}, {
       'Aporte $': xlsNum(ap.monto_aporte), 'Abonado $': xlsNum(pagado[ap.id] || 0), 'Pendiente $': xlsNum(pendiente(ap)),
       'Último abono': xlsFecha(ultimo[ap.id])
     }));
@@ -4532,7 +4568,16 @@ async function xlsDeudaProyectos(){
     return {'Proyecto': p.nombre, 'Activo': xlsSiNo(p.activo), 'Presupuesto $': xlsNum(p.presupuesto_total), 'Comprometido $': xlsNum(comp),
       'Recaudado $': xlsNum(rec), 'Pendiente $': xlsNum(comp - rec), 'Aptos que deben': suyos.filter(ap=>pendiente(ap) > 0.005).length};
   });
-  return [['Deudores proyectos', deudores], ['Resumen proyectos', resumen]];
+  // cada abono con su fecha y forma de pago: la suma por apartamento da el "Abonado $"
+  const aporte = {};
+  aportes.forEach(ap=>{ aporte[ap.id] = ap; });
+  const abonosDet = abonos.map(b=>({b, ap: aporte[b.aporte_id] || {}}))
+    .sort((x, y)=>nombreProy(x.ap.proyecto_id).localeCompare(nombreProy(y.ap.proyecto_id))
+      || String(x.ap.apartamento_id).localeCompare(String(y.ap.apartamento_id)) || String(x.b.fecha).localeCompare(String(y.b.fecha)))
+    .map(({b, ap})=>({'Proyecto': nombreProy(ap.proyecto_id), 'Apartamento': ap.apartamento_id || '', 'Propietario': xlsNombre(aptos, ap.apartamento_id),
+      'Fecha': xlsFecha(b.fecha), 'Forma de pago': b.forma_pago || '', 'Referencia': b.referencia || '', 'Monto $': xlsNum(b.monto)}));
+  return [['Deudores proyectos', xlsConTotal(deudores, 'Proyecto')], ['Abonos proyectos', xlsConTotal(abonosDet, 'Proyecto')],
+    ['Abonos por forma', xlsPorForma(abonosDet, 'Proyecto')], ['Resumen proyectos', xlsConTotal(resumen, 'Proyecto', 'TOTAL')]];
 }
 
 async function xlsCobros(desde, hasta){
@@ -4544,17 +4589,22 @@ async function xlsCobros(desde, hasta){
   proys.forEach(p=>{ nombreProy[p.id] = p.nombre; });
   aportes.forEach(ap=>{ aporte[ap.id] = ap; });
   const cond = pagos.filter(p=>xlsEnRango(p.fecha, desde, hasta)).map(p=>({
-    'Fecha': xlsFecha(p.fecha), 'Apartamento': p.apartamento_id, 'Propietario': (aptos[p.apartamento_id] || {}).propietario || '',
+    'Fecha': xlsFecha(p.fecha), 'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id),
     'Monto $': xlsNum(p.monto), 'Forma de pago': p.forma_pago || '', 'Banco': p.banco || '', 'Referencia': p.referencia || '',
     'Estado': p.estado || '', 'Origen': p.origen === 'portal' ? 'Reportado en el portal' : 'Tesorería', 'Nota': p.nota || ''
   }));
   const proy = abonos.filter(b=>xlsEnRango(b.fecha, desde, hasta)).map(b=>{
     const ap = aporte[b.aporte_id] || {};
     return {'Fecha': xlsFecha(b.fecha), 'Proyecto': nombreProy[ap.proyecto_id] || '', 'Apartamento': ap.apartamento_id || '',
-      'Propietario': (aptos[ap.apartamento_id] || {}).propietario || '', 'Monto $': xlsNum(b.monto),
+      'Propietario': xlsNombre(aptos, ap.apartamento_id), 'Monto $': xlsNum(b.monto),
       'Forma de pago': b.forma_pago || '', 'Referencia': b.referencia || ''};
   });
-  return [['Cobros condominio', cond], ['Cobros proyectos', proy]];
+  // los totales cuentan solo lo confirmado; reportados y rechazados quedan en la lista pero no suman
+  const condOk = cond.filter(f=>f['Estado'] === 'confirmado');
+  const totCond = condOk.length ? [{'Fecha': 'TOTAL CONFIRMADO (' + condOk.length + ')', 'Monto $': xlsNum(condOk.reduce((s, f)=>s + f['Monto $'], 0))}] : [];
+  const porForma = xlsPorForma(condOk.map(f=>Object.assign({'Cobro': 'Condominio'}, f))
+    .concat(proy.map(f=>Object.assign({'Cobro': 'Proyecto: ' + f['Proyecto']}, f))), 'Cobro');
+  return [['Cobros condominio', cond.concat(totCond)], ['Cobros proyectos', xlsConTotal(proy, 'Fecha')], ['Cobros por forma', porForma]];
 }
 
 const XLS_TIPO_EGRESO = {gasto: 'Pago a proveedor', nomina_q1: 'Nómina 1ra quincena', nomina_q2: 'Nómina 2da quincena',
@@ -4584,7 +4634,7 @@ async function xlsPagosRealizados(desde, hasta){
     'Pagado $': xlsNum(pagadoGasto[g.id] || 0), 'Por pagar $': xlsNum(Math.max(0, Number(g.monto) - (pagadoGasto[g.id] || 0))),
     'Entra al recibo': xlsSiNo(g.prorrateable), 'Origen': g.origen === 'nomina' ? 'Nómina' : 'Manual'
   }));
-  return [['Pagos realizados', pagos], ['Gastos registrados', facturas]];
+  return [['Pagos realizados', xlsConTotal(pagos, 'Fecha')], ['Pagos por forma', xlsPorForma(pagos)], ['Gastos registrados', xlsConTotal(facturas, 'Mes')]];
 }
 
 async function xlsProveedores(){
@@ -4659,9 +4709,9 @@ async function xlsInventario(desde, hasta){
 // [clave, etiqueta, descripcion, funcion, se filtra por fechas]
 const XLS_REPORTES = [
   ['propietarios', '👤 Propietarios', 'Todos los datos de cada apartamento: contactos, inquilinos, puestos, maleteros, m², alícuota y saldo.', xlsPropietarios, false],
-  ['deuda', '📨 Deuda de recibos', 'Deudores del condominio con sus contactos, y el detalle de cada recibo pendiente.', xlsDeudaRecibos, false],
-  ['proyectos', '💧 Deuda de proyectos', 'Quién debe en cada proyecto (Pozo de Agua y otros), con contactos, y el resumen de cada proyecto.', xlsDeudaProyectos, false],
-  ['cobros', '💵 Historial de cobros', 'Todo lo recibido: pagos del condominio y abonos a proyectos.', xlsCobros, true],
+  ['deuda', '📨 Deuda de recibos', 'Deudores del condominio, cada recibo pendiente y cada pago con fecha y forma de pago, con totales.', xlsDeudaRecibos, false],
+  ['proyectos', '💧 Deuda de proyectos', 'Quién debe en cada proyecto (Pozo de Agua y otros), cada abono con fecha y forma de pago, totales por forma y resumen.', xlsDeudaProyectos, false],
+  ['cobros', '💵 Historial de cobros', 'Todo lo recibido, pago por pago con fecha y forma de pago: condominio y proyectos, con totales por forma de pago.', xlsCobros, true],
   ['egresos', '💸 Historial de pagos realizados', 'Pagos a proveedores, nómina y aportes, y los gastos registrados con lo que falta por pagar.', xlsPagosRealizados, true],
   ['proveedores', '🏪 Proveedores', 'Ficha de cada proveedor (RIF, teléfono, correo, contacto) con lo facturado, lo pagado y sus facturas.', xlsProveedores, false],
   ['inventario', '📦 Inventario', 'Existencias, todos los movimientos numerados y las solicitudes de material.', xlsInventario, true]
