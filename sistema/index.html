@@ -87,7 +87,9 @@
   .searchbox{width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:13px;margin-bottom:12px;}
   .searchbox:focus{outline:none;border-color:var(--accent);}
 
-  h3.section{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--sub);margin:0 0 8px 0;font-weight:700;}
+  h3.section{font-size:12.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--text);margin:0 0 8px 0;font-weight:800;}
+  /* subtitulos desplegables (Agregar un empleado, Pegar el estado de cuenta...): en negrita, no tenues */
+  #sidebarBody summary:not(.tituloCuenta), #fichaModal summary{color:var(--text) !important;font-weight:700 !important;}
 
   /* filas tipo lista de Ajustes de macOS: etiqueta a la izquierda, valor a la derecha,
      sin caja visible, solo una linea fina entre filas (nada de cajas largas y vacias) */
@@ -101,12 +103,12 @@
   .form-row select{appearance:none;-webkit-appearance:none;cursor:pointer;}
   .form-row.two{display:flex;gap:14px;border-bottom:none;padding:6px 2px;margin-bottom:0;}
   .form-row.two > div{flex:1;display:flex;flex-direction:column;gap:5px;}
-  .form-row.two > div label{border-bottom:none;padding:0;font-size:11px;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;font-weight:600;}
+  .form-row.two > div label{border-bottom:none;padding:0;font-size:11px;color:var(--text);text-transform:uppercase;letter-spacing:.4px;font-weight:700;}
   .form-row.two > div input{text-align:left;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;width:100%;}
   .form-row.two > div input:focus{background:var(--panel2);}
   /* filas con textarea (plantillas de WhatsApp, descripciones largas): quedan apiladas, no en linea */
   .form-row:has(textarea){flex-direction:column;align-items:stretch;gap:6px;border-bottom:none;padding-bottom:2px;}
-  .form-row:has(textarea) label{font-size:11px;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;font-weight:600;}
+  .form-row:has(textarea) label{font-size:11px;color:var(--text);text-transform:uppercase;letter-spacing:.4px;font-weight:700;}
   .form-row textarea{width:100%;margin-top:2px;}
 
   .detail-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
@@ -163,10 +165,10 @@
   .dashGrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;overflow-y:auto;flex:1;padding-right:4px;}
   @media (max-width:760px){ .dashGrid{grid-template-columns:1fr;} .dashCard{padding:16px;} }
   .dashWidget{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:14px;}
-  .dashWidget h3{margin:0 0 10px 0;font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--sub);}
+  .dashWidget h3{margin:0 0 10px 0;font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);font-weight:800;}
   .statTiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
   .statTile{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:14px;}
-  .statTile .stLabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--sub);margin-bottom:6px;font-weight:700;}
+  .statTile .stLabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);margin-bottom:6px;font-weight:800;}
   .statTile .stValue{font-size:23px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;}
   .statTile .stSub{font-size:11px;color:var(--sub);margin-top:3px;}
   .statTile.ok .stValue{color:var(--green);}
@@ -175,7 +177,7 @@
   @media (max-width:760px){ .statTiles{grid-template-columns:1fr 1fr;} }
   /* dashboard combinado: numero protagonista arriba, grilla en medio, lista de acciones abajo */
   .dashHero{padding-bottom:14px;margin-bottom:2px;border-bottom:1px solid var(--border);}
-  .dashHeroLabel{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);font-weight:700;margin-bottom:4px;}
+  .dashHeroLabel{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text);font-weight:800;margin-bottom:4px;}
   .dashHeroValue{font-size:38px;font-weight:800;color:var(--red);line-height:1;font-variant-numeric:tabular-nums;}
   .accionRow{display:flex;align-items:center;gap:12px;padding:9px 10px;background:var(--panel);border-radius:10px;border-left:3px solid var(--accent);}
   .accionAvatar{width:30px;height:30px;border-radius:50%;background:var(--border);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;flex:none;color:var(--text);}
@@ -3772,7 +3774,7 @@ function renderCuentasCompleto(body){
   // ----- pagos -----
   const secP = document.createElement('div');
   secP.style.marginTop = '16px';
-  const opcionesApt = apartments.slice().sort((a,b)=>a.id.localeCompare(b.id))
+  const opcionesApt = '<option value="">— Elige el apartamento —</option>' + apartments.slice().sort((a,b)=>a.id.localeCompare(b.id))
     .map(a=>'<option value="'+esc(a.id)+'">'+esc(a.id)+' · '+esc(a.propietario||'')+'</option>').join('');
   secP.innerHTML =
     '<h3 class="section tituloCuenta" style="--c:#4f8f6a;"><span class="tcIcono">💵</span>Registrar un cobro (pago de un vecino)</h3>'
@@ -3787,6 +3789,7 @@ function renderCuentasCompleto(body){
   body.appendChild(secP);
 
   document.getElementById('pRegistrar').onclick = async ()=>{
+    if(!document.getElementById('pApt').value){ alert('Elige el apartamento.'); return; }
     const monto = parseFloat(document.getElementById('pMonto').value);
     if(!(monto > 0)){ alert('Escribe el monto del pago.'); return; }
     const btn = document.getElementById('pRegistrar');
@@ -3825,10 +3828,74 @@ function renderCuentasCompleto(body){
     + (pagosCache.length
         ? pagosCache.map(p=>
             '<div class="comp-item"><span class="t">' + esc(p.fecha) + ' · ' + esc(p.apartamento_id)
-            + ' <span style="color:var(--dim);">' + escHtml(p.forma_pago||'') + '</span></span>'
-            + '<span style="color:var(--green);">' + fmtMoney(p.monto) + '</span></div>').join('')
+            + ' · ' + esc((apartments.find(a=>a.id===p.apartamento_id) || {}).propietario || '')
+            + ' <span style="color:var(--dim);">' + escHtml(p.forma_pago||'') + (p.referencia ? ' · Ref. ' + escHtml(p.referencia) : '') + '</span></span>'
+            + '<span style="color:var(--green);display:flex;align-items:center;gap:4px;white-space:nowrap;">' + fmtMoney(p.monto) + botonesPagoAdmin(p.id) + '</span></div>').join('')
         : '<div class="empty">Todavía no hay cobros registrados.</div>');
   body.appendChild(secUlt);
+  conectarPagoAdmin(secUlt, async ()=>{ await refrescarCuentas(); await recargarDeuda(); });
+}
+
+// ----- el administrador corrige o borra un pago ya registrado (sql/19) -----
+// La base vuelve a repartir los pagos del apartamento entre sus recibos y lo deja en la auditoría.
+function botonesPagoAdmin(id){
+  if(!esMaster()) return '';
+  return ' <button class="chip" data-pago-ed="' + id + '" style="background:var(--panel2);padding:3px 8px;" title="Corregir este pago">✏️</button>'
+    + '<button class="chip" data-pago-del="' + id + '" style="background:var(--panel2);color:var(--red);padding:3px 8px;" title="Borrar este pago">🗑️</button>';
+}
+function conectarPagoAdmin(cont, alTerminar){
+  if(!esMaster()) return;
+  const leerPago = async id=>{
+    const { data, error } = await db.from('pagos').select('*').eq('id', id).single();
+    if(error){ alert('No se pudo leer el pago: ' + error.message); return null; }
+    return data;
+  };
+  cont.querySelectorAll('[data-pago-del]').forEach(b=>{ b.onclick = async ()=>{
+    const p = await leerPago(b.dataset.pagoDel);
+    if(!p) return;
+    if(!confirm('¿Borrar el pago de ' + fmtMoney(Number(p.monto)) + ' del ' + p.apartamento_id + ' (' + p.fecha + (p.referencia ? ', ref. ' + p.referencia : '') + ')?\n\n'
+      + 'Sus recibos vuelven a quedar pendientes por ese monto. El borrado queda en la auditoría.')) return;
+    b.disabled = true;
+    const { error } = await db.rpc('eliminar_pago', {p_pago: p.id});
+    if(error){ b.disabled = false; alert('No se pudo borrar: ' + error.message); return; }
+    await alTerminar();
+  }; });
+  cont.querySelectorAll('[data-pago-ed]').forEach(b=>{ b.onclick = async ()=>{
+    const fila = b.closest('.comp-item');
+    const sig = fila.nextElementSibling;
+    if(sig && sig.dataset.pagoForm){ sig.remove(); return; }
+    const p = await leerPago(b.dataset.pagoEd);
+    if(!p) return;
+    const formas = FORMAS_COBRO.slice();
+    if(p.forma_pago && !formas.includes(p.forma_pago)) formas.unshift(p.forma_pago);
+    const host = document.createElement('div');
+    host.dataset.pagoForm = p.id;
+    host.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:4px 10px 8px;margin:4px 0 10px;';
+    host.innerHTML = '<div class="form-row"><label>Apartamento</label><select data-c="apto">'
+        + apartments.slice().sort((a,b)=>a.id.localeCompare(b.id)).map(a=>'<option value="' + esc(a.id) + '"' + (a.id === p.apartamento_id ? ' selected' : '') + '>'
+          + esc(a.id) + ' · ' + esc(a.propietario||'') + '</option>').join('') + '</select></div>'
+      + '<div class="form-row"><label>Monto</label><input type="number" step="0.01" min="0.01" data-c="monto" value="' + Number(p.monto).toFixed(2) + '"></div>'
+      + '<div class="form-row"><label>Fecha</label><input type="date" data-c="fecha" value="' + escHtml(p.fecha) + '"></div>'
+      + '<div class="form-row"><label>Forma</label><select data-c="forma_pago">' + formas.map(f=>'<option' + (f === p.forma_pago ? ' selected' : '') + '>' + escHtml(f) + '</option>').join('') + '</select></div>'
+      + '<div class="form-row"><label>Banco</label><input type="text" data-c="banco" value="' + escHtml(p.banco||'') + '"></div>'
+      + '<div class="form-row"><label>Referencia</label><input type="text" data-c="referencia" value="' + escHtml(p.referencia||'') + '"></div>'
+      + '<div class="form-row"><label>Nota</label><input type="text" data-c="nota" value="' + escHtml(p.nota||'') + '"></div>'
+      + '<button class="chip" data-c-guardar style="background:var(--accent);color:#fff;width:100%;margin-top:4px;">💾 Guardar corrección</button>'
+      + '<div class="assumption">Al guardar, los pagos del apartamento se vuelven a repartir entre sus recibos, del más viejo al más nuevo. La corrección queda en la auditoría.</div>';
+    fila.after(host);
+    host.querySelector('[data-c-guardar]').onclick = async e=>{
+      const v = c=>host.querySelector('[data-c="' + c + '"]').value.trim();
+      const monto = parseFloat(v('monto'));
+      if(!(monto > 0)){ alert('El monto debe ser mayor que cero.'); return; }
+      e.target.disabled = true;
+      const { error } = await db.rpc('corregir_pago', {
+        p_pago: p.id, p_apto: v('apto'), p_fecha: v('fecha') || null, p_monto: monto,
+        p_forma: v('forma_pago'), p_banco: v('banco'), p_referencia: v('referencia'), p_nota: v('nota')
+      });
+      if(error){ e.target.disabled = false; alert('No se pudo guardar: ' + traducirErrorPago(error.message)); return; }
+      await alTerminar();
+    };
+  }; });
 }
 
 // ----- pagos reportados por los vecinos desde el portal -----
@@ -4337,11 +4404,11 @@ function renderSidebar(){
 }
 
 // ---------- exportar a Excel: cada reporte se arma con datos frescos de la base ----------
-async function xlsTraer(tabla, cols, orden){
+async function xlsTraer(tabla, cols, orden, desc){
   let todo = [], desde = 0;
   for(;;){
     let q = db.from(tabla).select(cols || '*');
-    if(orden) q = q.order(orden);
+    if(orden) q = q.order(orden, {ascending: !desc});
     const r = await q.range(desde, desde + 999);
     if(r.error) throw new Error(tabla + ': ' + r.error.message);
     todo = todo.concat(r.data || []);
@@ -4658,6 +4725,24 @@ function renderExportarSeccion(body){
 // ---------- Proveedores e inventario de materiales ----------
 // La tesorería (y el admin) registra; la junta solo ve. En la base los
 // movimientos no se editan ni se borran: un error se corrige con un ajuste.
+// lista larga por tandas: al bajar hasta el final se agregan mas filas solas (sin tope)
+function pintarPorTandas(host, filas, filaHtml, vacio, tanda){
+  tanda = tanda || 60;
+  host.innerHTML = '';
+  if(!filas.length){ host.innerHTML = vacio || ''; return; }
+  let i = 0;
+  const marca = document.createElement('div');
+  host.appendChild(marca);
+  const obs = new IntersectionObserver(ents=>{
+    if(!ents.some(e=>e.isIntersecting)) return;
+    marca.insertAdjacentHTML('beforebegin', filas.slice(i, i + tanda).map(filaHtml).join(''));
+    i += tanda;
+    obs.unobserve(marca);
+    if(i >= filas.length || !marca.isConnected){ obs.disconnect(); marca.remove(); return; }
+    obs.observe(marca); // si el final sigue a la vista, vuelve a avisar y sigue pintando
+  }, {rootMargin: '400px'});
+  obs.observe(marca);
+}
 function hoyLocal(){ return new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
 function fmtCant(n){ return (Number(n) || 0).toLocaleString('es-VE', {maximumFractionDigits: 3}); }
 function fmtFechaCorta(s){ return s ? new Date(String(s).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-VE', {day: '2-digit', month: '2-digit', year: 'numeric'}) : ''; }
@@ -4787,6 +4872,7 @@ function renderProveedoresSeccion(body){
 
 // ===== Inventario =====
 let invVista = 'existencias';
+let ipFormAbierto = false, ipAviso = ''; // formulario de productos: abierto entre recargas y ultimo aviso
 try{ invVista = localStorage.getItem('hh_inv_vista') || 'existencias'; }catch(e){}
 const INV_VISTAS = [
   ['existencias', '📋 Existencias'], ['entrada', '⬇️ Entrada'], ['salida', '⬆️ Salida'],
@@ -4830,13 +4916,15 @@ function renderInventarioSeccion(body){
   };
   const err = (r, que)=>{ if(r.error){ alert('No se pudo ' + que + ': ' + r.error.message); return true; } return false; };
 
+  // todo el historial, de mil en mil: la lista no tiene tope
+  const todo = (tabla, orden, desc)=>xlsTraer(tabla, '*', orden, desc).then(data=>({data}), e=>({error: {message: e.message}}));
   const cargar = async ()=>{
     const [pr, pv, mv, so, it, pf] = await Promise.all([
-      db.from('v_inventario').select('*').order('nombre'),
+      todo('v_inventario', 'nombre'),
       db.from('proveedores').select('id, nombre, activo').order('nombre'),
-      db.from('inventario_movimientos').select('*').order('numero', {ascending: false}).limit(1000),
-      db.from('solicitudes_material').select('*').order('numero', {ascending: false}).limit(300),
-      db.from('solicitud_items').select('*'),
+      todo('inventario_movimientos', 'numero', true),
+      todo('solicitudes_material', 'numero', true),
+      todo('solicitud_items', 'id'),
       db.from('perfiles').select('id, nombre, correo')
     ]);
     const fallo = [pr, pv, mv, so, it].find(r=>r.error);
@@ -4893,7 +4981,7 @@ function renderInventarioSeccion(body){
           const host = cuerpo.querySelector('[data-kardex-de="' + f.dataset.kardex + '"]');
           if(host.style.display === 'none'){
             const movs = D.movs.filter(m=>m.producto_id === f.dataset.kardex);
-            host.innerHTML = movs.length ? movs.slice(0, 30).map(filaMov).join('') : '<div class="assumption">Sin movimientos.</div>';
+            pintarPorTandas(host, movs, filaMov, '<div class="assumption">Sin movimientos.</div>');
             host.style.display = '';
           }else host.style.display = 'none';
         }; });
@@ -4904,7 +4992,9 @@ function renderInventarioSeccion(body){
     }
 
     else if(invVista === 'productos'){
-      cuerpo.innerHTML = (edita ? '<details id="ipForm"><summary style="cursor:pointer;font-weight:700;padding:6px 0;">➕ <span id="ipTit">Nuevo producto</span></summary>'
+      cuerpo.innerHTML = (edita ? '<details id="ipForm"' + (ipFormAbierto ? ' open' : '') + '><summary style="cursor:pointer;font-weight:700;padding:6px 0;">➕ <span id="ipTit">Nuevo producto</span></summary>'
+        + '<div id="ipEditando" style="display:none;background:color-mix(in srgb, var(--amber) 14%, transparent);border-left:4px solid var(--amber);border-radius:8px;padding:7px 10px;margin:4px 0;font-size:12.5px;"></div>'
+        + (ipAviso ? '<div class="savedFlag" style="color:var(--green);">' + escHtml(ipAviso) + '</div>' : '')
         + '<input type="hidden" id="ipId">'
         + '<div class="form-row"><label>Nombre *</label><input type="text" id="ipNombre" placeholder="Ej. Cloro, Bombillo LED 12W"></div>'
         + '<div class="form-row"><label>Unidad de medida *</label><select id="ipUnidad">' + UNIDADES.map(u=>'<option>' + u + '</option>').join('')
@@ -4918,21 +5008,37 @@ function renderInventarioSeccion(body){
         + '<div class="assumption">La existencia no se escribe aquí: sale de las entradas y salidas. La unidad no se puede cambiar después del primer movimiento.</div>'
         + '<div style="display:flex;gap:6px;margin:6px 0 10px;"><button class="btn primary" id="ipGuardar" style="flex:1;">💾 Guardar</button>'
         + '<button class="btn ghost" id="ipLimpiar" style="flex:0 0 auto;">Limpiar</button></div></details>' : '')
-        + '<div id="ipLista">' + (D.productos.length ? D.productos.map(p=>'<div class="comp-item" style="' + (p.activo ? '' : 'opacity:.55;') + '">'
+        + '<h3 class="section" style="margin-top:12px;">Productos registrados (' + D.productos.length + ')</h3>'
+        + (D.productos.length > 8 ? '<input class="searchbox" id="ipBuscar" placeholder="Buscar producto, código o categoría…">' : '')
+        + '<div id="ipLista">' + (D.productos.length ? D.productos.map(p=>'<div class="comp-item" data-ip-fila="' + escHtml(normalizeSearch([p.nombre, p.codigo, p.categoria].join(' '))) + '" style="' + (p.activo ? '' : 'opacity:.55;') + '">'
           + '<span class="t"><b>' + escHtml(p.nombre) + '</b> <span style="font-size:11px;color:var(--sub);">(' + escHtml(p.unidad) + ')</span>'
           + (p.activo ? '' : ' <span style="font-size:11px;color:var(--sub);">inactivo</span>')
           + '<br><span style="font-size:11px;color:var(--sub);">' + [p.codigo, p.categoria, p.ubicacion, p.nota].filter(Boolean).map(escHtml).join(' · ') + '</span></span>'
           + (edita ? '<span style="display:flex;gap:4px;"><button class="chip" data-ip-editar="' + p.id + '" style="background:var(--panel2);">✏️</button>'
             + '<button class="chip" data-ip-activo="' + p.id + '" style="background:var(--panel2);" title="' + (p.activo ? 'Desactivar' : 'Activar') + '">' + (p.activo ? '⏸' : '▶') + '</button></span>' : '')
           + '</div>').join('') : '<div class="empty">Todavía no hay productos.</div>') + '</div>';
+      ipAviso = '';
+      const buscar = cuerpo.querySelector('#ipBuscar');
+      if(buscar) buscar.oninput = ()=>{
+        const n = normalizeSearch(buscar.value || '');
+        cuerpo.querySelectorAll('[data-ip-fila]').forEach(f=>{ f.style.display = !n || f.dataset.ipFila.includes(n) ? '' : 'none'; });
+      };
       if(!edita) return;
+      const form = cuerpo.querySelector('#ipForm');
+      form.ontoggle = ()=>{ ipFormAbierto = form.open; };
       const selU = cuerpo.querySelector('#ipUnidad');
       selU.onchange = ()=>{ cuerpo.querySelector('#ipOtraFila').style.display = selU.value === '__otra' ? '' : 'none'; };
+      // el formulario sirve para crear y para editar: hay que salir de la edicion antes de crear otro,
+      // si no, el producto nuevo se escribia ENCIMA del que se estaba editando
       const limpiar = ()=>{
-        cuerpo.querySelectorAll('#ipForm input').forEach(i=>{ i.value = i.id === 'ipMin' ? '0' : ''; });
+        cuerpo.querySelectorAll('#ipForm input').forEach(i=>{ i.value = i.id === 'ipMin' ? '0' : ''; i.disabled = false; });
         selU.value = 'unidad'; selU.disabled = false; selU.onchange();
         cuerpo.querySelector('#ipTit').textContent = 'Nuevo producto';
+        cuerpo.querySelector('#ipEditando').style.display = 'none';
+        cuerpo.querySelector('#ipGuardar').textContent = '💾 Crear producto';
+        cuerpo.querySelector('#ipLimpiar').textContent = 'Limpiar';
       };
+      limpiar();
       cuerpo.querySelector('#ipLimpiar').onclick = limpiar;
       cuerpo.querySelectorAll('[data-ip-editar]').forEach(b=>{ b.onclick = ()=>{
         const p = prod(b.dataset.ipEditar);
@@ -4950,6 +5056,11 @@ function renderInventarioSeccion(body){
         selU.disabled = conMovs;
         cuerpo.querySelector('#ipOtra').disabled = conMovs;
         cuerpo.querySelector('#ipTit').textContent = 'Editar ' + p.nombre;
+        const aviso = cuerpo.querySelector('#ipEditando');
+        aviso.innerHTML = '✏️ Estás <b>editando «' + escHtml(p.nombre) + '»</b>. Para crear un producto nuevo pulsa <b>Cancelar edición</b> primero.';
+        aviso.style.display = '';
+        cuerpo.querySelector('#ipGuardar').textContent = '💾 Guardar cambios';
+        cuerpo.querySelector('#ipLimpiar').textContent = 'Cancelar edición';
         cuerpo.querySelector('#ipForm').open = true;
         cuerpo.querySelector('#ipForm').scrollIntoView({block: 'start'});
       }; });
@@ -4967,8 +5078,13 @@ function renderInventarioSeccion(body){
         if(!fila.nombre || !unidad){ alert('Hacen falta el nombre y la unidad de medida.'); return; }
         const id = v('ipId');
         if(!selU.disabled) fila.unidad = unidad;
+        const antes = id ? prod(id) : null;
+        if(antes && antes.nombre && normalizeSearch(antes.nombre) !== normalizeSearch(fila.nombre)
+           && !confirm('Vas a CAMBIARLE EL NOMBRE a «' + antes.nombre + '» por «' + fila.nombre + '».\n\nNo se crea un producto nuevo: «' + antes.nombre + '» deja de existir con ese nombre.\n\n¿Es lo que quieres? (Para crear uno nuevo, pulsa Cancelar y luego «Cancelar edición».)')) return;
         const r = id ? await db.from('productos').update(fila).eq('id', id) : await db.from('productos').insert(fila);
-        if(r.error){ alert(/duplicate|unique/i.test(r.error.message) ? 'Ya existe un producto con ese nombre o ese código.' : 'No se pudo guardar: ' + r.error.message); return; }
+        if(r.error){ alert(/duplicate|unique/i.test(r.error.message) ? 'Ya existe un producto con ese nombre o ese código (puede estar inactivo, más abajo en la lista).' : 'No se pudo guardar: ' + r.error.message); return; }
+        ipAviso = '✓ ' + (id ? 'Cambios guardados en «' : 'Producto creado: «') + fila.nombre + '»';
+        ipFormAbierto = true; // queda abierto para cargar el siguiente
         await cargar();
       };
     }
@@ -4994,9 +5110,11 @@ function renderInventarioSeccion(body){
             + '<div class="form-row"><label>Quién lo recibe</label><input type="text" id="imRecibe" placeholder="Ej. Estanislao Ascanio"></div>')
         + '<div class="form-row"><label>Nota <span id="imNotaReq" style="color:var(--red);display:none;">(obligatoria en un ajuste)</span></label><input type="text" id="imNota"></div>'
         + '<button class="btn primary" id="imGuardar" style="width:100%;margin-top:6px;">' + (ent ? '⬇️ Registrar entrada' : '⬆️ Registrar salida') + '</button>'
-        + '<h3 class="section" style="margin-top:14px;">Últimos movimientos</h3>'
-        + (D.movs.filter(m=>ent ? (m.tipo === 'entrada' || m.tipo === 'ajuste_mas') : (m.tipo === 'salida' || m.tipo === 'ajuste_menos')).slice(0, 10).map(filaMov).join('')
-          || '<div class="empty">Sin movimientos todavía.</div>');
+        + '<h3 class="section" style="margin-top:14px;">' + (ent ? 'Entradas' : 'Salidas') + ' registradas</h3>'
+        + '<div id="imLista"></div>';
+      pintarPorTandas(cuerpo.querySelector('#imLista'),
+        D.movs.filter(m=>ent ? (m.tipo === 'entrada' || m.tipo === 'ajuste_mas') : (m.tipo === 'salida' || m.tipo === 'ajuste_menos')),
+        filaMov, '<div class="empty">Sin movimientos todavía.</div>');
       const selP = cuerpo.querySelector('#imProd');
       selP.onchange = ()=>{ const p = prod(selP.value); cuerpo.querySelector('#imUnidad').textContent = p.unidad ? '(' + p.unidad + (ent ? '' : ', hay ' + fmtCant(p.existencia)) + ')' : ''; };
       cuerpo.querySelector('#imTipo').onchange = e=>{ cuerpo.querySelector('#imNotaReq').style.display = e.target.value.startsWith('ajuste') ? '' : 'none'; };
@@ -5025,9 +5143,7 @@ function renderInventarioSeccion(body){
       const lista = ()=>{
         const t = cuerpo.querySelector('#ivTipo').value, pid = cuerpo.querySelector('#ivProd').value;
         const vis = D.movs.filter(m=>(!t || m.tipo === t) && (!pid || m.producto_id === pid));
-        cuerpo.querySelector('#ivLista').innerHTML = vis.length ? vis.slice(0, 200).map(filaMov).join('')
-          + (vis.length > 200 ? '<div class="assumption">Se muestran los 200 más recientes. El historial completo está en 📥 Exportar.</div>' : '')
-          : '<div class="empty">Sin movimientos.</div>';
+        pintarPorTandas(cuerpo.querySelector('#ivLista'), vis, filaMov, '<div class="empty">Sin movimientos.</div>');
       };
       cuerpo.querySelector('#ivTipo').onchange = lista;
       cuerpo.querySelector('#ivProd').onchange = lista;
@@ -5454,12 +5570,14 @@ function renderFichaResumen(pane){
       host.innerHTML = data.map(r=>
         '<div class="comp-item"><span class="t">' + esc(r.fecha) + ' · ' + escHtml(r.concepto) + '</span>'
         + (Number(r.abono) > 0
-            ? '<span style="color:var(--green);">−' + fmtMoney(Number(r.abono)) + '</span>'
+            ? '<span style="color:var(--green);display:flex;align-items:center;gap:4px;white-space:nowrap;">−' + fmtMoney(Number(r.abono))
+              + (r.tipo === 'pago' ? botonesPagoAdmin(r.referencia_id) : '') + '</span>'
             : '<span style="display:flex;align-items:center;gap:6px;">' + fmtMoney(Number(r.cargo))
               + (r.tipo === 'recibo' ? ' <button class="chip" data-ver-recibo="' + r.referencia_id + '" style="background:#3b78b5;color:#fff;padding:3px 8px;">👁 Ver</button>' : '')
               + '</span>')
         + '</div>').join('');
       host.querySelectorAll('[data-ver-recibo]').forEach(b=>{ b.onclick = ()=>abrirRecibo(b.dataset.verRecibo); });
+      conectarPagoAdmin(host, async ()=>{ await recargarDeuda(); await refrescarTrasMovimiento(); irAFichaTab('resumen'); });
     });
 }
 
@@ -6592,7 +6710,9 @@ function renderProyectoDetalle(body, p){
               +'</div>';
           }
           const fecha = new Date(h.fecha).toLocaleDateString('es-VE',{day:'2-digit',month:'short',year:'numeric'});
-          return '<div class="comp-item" style="padding-left:14px;"><span class="t">'+fecha+' · '+esc(h.forma_pago||'No especificado')+(h.nota && formaPideReferencia(h.forma_pago) ? ' · Ref. '+escHtml(h.nota) : '')+'</span><span>$'+(h.monto||0).toFixed(2)+' <button class="btn ghost" data-edit-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" style="padding:1px 6px;font-size:10px;margin-left:6px;">✏️</button></span></div>';
+          return '<div class="comp-item" style="padding-left:14px;"><span class="t">'+fecha+' · '+esc(h.forma_pago||'No especificado')+(h.nota && formaPideReferencia(h.forma_pago) ? ' · Ref. '+escHtml(h.nota) : '')+'</span><span>$'+(h.monto||0).toFixed(2)+' <button class="btn ghost" data-edit-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" style="padding:1px 6px;font-size:10px;margin-left:6px;">✏️</button>'
+            +(esMaster() ? '<button class="btn ghost" data-del-hist data-apt="'+esc(ap.apt_id)+'" data-idx="'+idx+'" title="Borrar este abono" style="padding:1px 6px;font-size:10px;margin-left:4px;color:#c1503f;">🗑️</button>' : '')
+            +'</span></div>';
         }).join('')
       : (()=>{
           const isAdding = editingHist && editingHist.aptId===ap.apt_id && editingHist.idx===-1;
@@ -6632,7 +6752,11 @@ function renderProyectoDetalle(body, p){
     });
     host.innerHTML = matches.length ? matches.map(aporteRowHtml).join('') : '<div class="empty">Sin coincidencias.</div>';
   }
-  const opciones = (p.aportes||[]).map(ap=>'<option value="'+esc(ap.apt_id)+'">'+esc(ap.apt_id)+'</option>').join('');
+  // arranca en blanco: con el primer apartamento ya elegido es facil cargarle el abono a quien no es
+  const opciones = '<option value="">— Elige el apartamento —</option>' + (p.aportes||[]).map(ap=>{
+    const apt = apartments.find(a=>a.id===ap.apt_id);
+    return '<option value="'+esc(ap.apt_id)+'">'+esc(ap.apt_id)+' · '+esc(apt && apt.propietario ? apt.propietario : 'Sin propietario')+'</option>';
+  }).join('');
   wrap.innerHTML = `
     <div class="detail-head">
       <div class="big-id" style="font-size:16px;">${esc(p.nombre)}</div>
@@ -6693,6 +6817,25 @@ function renderProyectoDetalle(body, p){
     if(editBtn){
       editingHist = {aptId: editBtn.dataset.apt, idx: parseInt(editBtn.dataset.idx,10)};
       renderAportesList(document.getElementById('ap_buscar_apto').value);
+      return;
+    }
+    // solo el administrador: un abono cargado por error se borra y el apartamento vuelve a deberlo
+    const delBtn = e.target.closest('[data-del-hist]');
+    if(delBtn && esMaster()){
+      const aptId = delBtn.dataset.apt;
+      const idx = parseInt(delBtn.dataset.idx,10);
+      const ap = (p.aportes||[]).find(x=>x.apt_id===aptId);
+      const h = ap && ap.historial && ap.historial[idx];
+      if(!h) return;
+      if(!confirm('¿Borrar el abono de $'+(h.monto||0).toFixed(2)+' de '+aptId+' ('+(h.forma_pago||'sin medio de pago')+(h.nota ? ', ref. '+h.nota : '')+')?\n\n'
+        +aptId+' vuelve a deber ese monto en "'+p.nombre+'". El borrado queda en la auditoría.')) return;
+      ap.historial.splice(idx,1);
+      ap.monto_pagado = ap.historial.reduce((s,x)=>s+(x.monto||0),0);
+      editingHist = null;
+      if(await saveProyectos()){
+        refreshRecaudado();
+        renderAportesList(document.getElementById('ap_buscar_apto').value);
+      }
       return;
     }
     const cancelBtn = e.target.closest('[data-cancel-hist]');
@@ -6766,6 +6909,7 @@ function renderProyectoDetalle(body, p){
     const formaPago = document.getElementById('ab_forma').value;
     const referencia = document.getElementById('ab_ref').value.trim();
     const flag = document.getElementById('savedFlagProy');
+    if(!aptId){ flag.textContent='Elige el apartamento.'; document.getElementById('ab_apt').focus(); return; }
     if(!monto || monto<=0){ flag.textContent='Ingresa un monto válido.'; return; }
     if(formaPideReferencia(formaPago) && !referencia){ flag.textContent='Ingresa el número de referencia del pago ('+formaPago+').'; document.getElementById('ab_ref').focus(); return; }
     const ap = (p.aportes||[]).find(x=>x.apt_id===aptId);
