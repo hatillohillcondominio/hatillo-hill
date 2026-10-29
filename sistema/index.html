@@ -2343,6 +2343,7 @@ let nominaMes = null;        // fila de nominas
 let nominaLineas = [];       // filas de nomina_lineas del mes
 let nominaPct = {};          // porcentajes de IVSS, RPE y FAOV (configuracion nomina_*)
 let empleadoEditando = null; // id del empleado cuyos conceptos se estan editando
+let descuentoAbierto = null;  // id del empleado con el formulario de faltas y descuentos abierto
 
 const TIPOS_CONCEPTO = {
   salarial: 'Salarial', no_salarial: 'No salarial', deduccion: 'Deducción',
@@ -2374,6 +2375,15 @@ async function cargarNomina(){
 
 const montoLinea = l => Math.round((Number(l.cantidad)||0) * (Number(l.monto_unitario)||0) * 100) / 100;
 
+// cuando se paga: 0 = mitad el 15 y mitad el 30, 1 = todo el 15, 2 = todo el 30
+const QUINCENAS = {0:'Mitad el 15 y mitad el 30', 1:'Todo el 15', 2:'Todo el 30'};
+const quincenaDe = l => (l.quincena !== undefined && l.quincena !== null) ? Number(l.quincena) : (l.solo_segunda_quincena ? 2 : 0);
+function partesQuincena(l){
+  const m = montoLinea(l), q = quincenaDe(l);
+  return q === 1 ? [m, 0] : (q === 2 ? [0, m] : [m/2, m/2]);
+}
+const opcionesQuincena = q => Object.keys(QUINCENAS).map(k=>'<option value="' + k + '"' + (Number(k)===q ? ' selected' : '') + '>' + QUINCENAS[k] + '</option>').join('');
+
 // totales de un empleado (o de toda la nomina si empId es null), solo lo que aplica
 function totalesNomina(empId){
   return totalesDeLineas(nominaLineas.filter(l=>!empId || l.empleado_id===empId));
@@ -2387,8 +2397,8 @@ function totalesDeLineas(lineas){
     const signo = ['salarial','no_salarial','pago_pasivo'].includes(l.tipo) ? 1
                 : (['deduccion','retencion'].includes(l.tipo) ? -1 : 0);
     if(!signo) return;
-    if(l.solo_segunda_quincena) t.q2 += signo*m;
-    else { t.q1 += signo*m/2; t.q2 += signo*m/2; }
+    const [a, b] = partesQuincena(l);
+    t.q1 += signo*a; t.q2 += signo*b;
   });
   t.asignaciones = t.salarial + t.no_salarial + t.pago_pasivo;
   t.neto = t.asignaciones - t.deduccion - t.retencion;
@@ -2433,7 +2443,7 @@ async function prepararNominaDelMes(){
     const filas = conceptosEmpleado.filter(c=>c.empleado_id===e.id).map(c=>({
       nomina_id: nominaMes.id, empleado_id: e.id, orden: c.orden, concepto: c.nombre, tipo: c.tipo,
       cantidad: c.por_dia ? (Number(c.dias_defecto)||0) : 1, monto_unitario: c.monto,
-      aplica: true, solo_segunda_quincena: c.solo_segunda_quincena,
+      aplica: true, quincena: quincenaDe(c), solo_segunda_quincena: quincenaDe(c) === 2,
       nota: c.condicional ? 'condicional' : (c.por_dia ? 'por dia' : null)
     }));
     if(filas.length){
@@ -2465,6 +2475,52 @@ function pasivosLottt(e){
     ['prestaciones', 'Prestaciones sociales (15 días del trimestre)', 15],
     ['fin_anio', 'Bono de fin de año', 0]
   ];
+}
+
+// que cobra el empleado el 15 y el 30, concepto por concepto
+function cuadroQuincenas(lin, t, bs){
+  const f2 = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const filas = lin.filter(l=>l.aplica && l.tipo!=='aporte_patronal').map(l=>{
+    const resta = l.tipo==='deduccion' || l.tipo==='retencion';
+    const [a, b] = partesQuincena(l);
+    const celda = v=>'<td' + (resta && v ? ' style="color:#c1503f;"' : '') + '>' + (v ? (resta ? '−' : '') + f2(v) : '') + '</td>';
+    return '<tr><td style="text-align:left;' + (resta ? 'color:#c1503f;' : '') + '">' + esc(l.concepto) + '</td>' + celda(a) + celda(b) + '</tr>';
+  }).join('');
+  return '<div style="margin-top:8px;font-size:12px;font-weight:700;">🗓️ Qué se le paga el 15 y el 30</div>'
+    + '<div class="presuScroll"><table class="tablaPresu" style="margin-top:4px;"><thead><tr><th style="text-align:left;">Concepto</th><th>Día 15</th><th>Día 30</th></tr></thead><tbody>'
+    + filas
+    + '<tr style="font-weight:700;"><td style="text-align:left;">Cobra</td><td>' + fmtMoney(t.q1) + bs(t.q1) + '</td><td>' + fmtMoney(t.q2) + bs(t.q2) + '</td></tr>'
+    + '</tbody></table></div>';
+}
+
+// formulario para descontar dias que no vino, un bono que pierde u otro descuento
+function formDescuento(e, lin){
+  const asign = lin.filter(l=>l.aplica && (l.tipo==='salarial' || l.tipo==='no_salarial'));
+  const porDia = salarioDiario(e.id);
+  const todoDia = Math.round(asign.reduce((s,l)=>s+montoLinea(l), 0) / 30 * 100) / 100;
+  return '<div id="descForm" data-emp="' + e.id + '" style="border:1px dashed #c1503f;border-radius:8px;padding:8px 10px;margin-top:8px;">'
+    + '<div style="font-weight:700;font-size:12.5px;margin-bottom:4px;">➖ Falta o descuento de ' + esc(e.nombre) + '</div>'
+    + '<div class="form-row"><label>Qué pasó</label><select id="dTipo">'
+      + '<option value="dias">No vino: descontar días</option>'
+      + '<option value="pierde">Pierde un bono o concepto (transporte, asistencia…)</option>'
+      + '<option value="otro">Otro descuento (adelanto, préstamo…)</option></select></div>'
+    + '<div class="form-row"><label>Se descuenta del pago</label><select id="dQuincena"><option value="1">del 15</option><option value="2">del 30</option></select></div>'
+    + '<div data-solo="dias"><div class="form-row two"><div><label>Días</label><input type="number" step="0.5" id="dDias" value="1"></div>'
+      + '<div><label>$ por día</label><input type="number" step="0.01" id="dPorDia" value="' + porDia + '"></div></div>'
+      + '<div class="assumption">Viene con el sueldo base ÷ 30 (' + fmtMoney(porDia) + '). Si se le descuenta todo lo que gana en el día, usa '
+      + fmtMoney(todoDia) + ' (todo lo del mes ÷ 30).</div></div>'
+    + '<div data-solo="pierde" class="form-row"><label>Concepto que pierde</label><select id="dConcepto">'
+      + asign.map(l=>{ const p = partesQuincena(l);
+          return '<option value="' + l.id + '">' + esc(l.concepto) + ' · el 15: ' + fmtMoney(p[0]) + ' · el 30: ' + fmtMoney(p[1]) + '</option>'; }).join('')
+      + '</select></div>'
+    + '<div data-solo="otro" class="form-row two"><div><label>Qué se descuenta</label><input type="text" id="dNombre" placeholder="Adelanto, préstamo…"></div>'
+      + '<div><label>Monto $</label><input type="number" step="0.01" id="dMonto"></div></div>'
+    + '<div class="form-row"><label>Motivo (opcional)</label><input type="text" id="dMotivo" placeholder="Ej. faltó el martes 4 sin aviso"></div>'
+    + '<div style="display:flex;gap:6px;margin-top:6px;">'
+      + '<button class="chip" id="dCancelar" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);flex:1;">Cancelar</button>'
+      + '<button class="chip" id="dGuardar" style="background:#c1503f;color:#fff;flex:2;">➖ Descontar</button></div>'
+    + '<div class="assumption" style="margin-top:6px;">Si pierde un bono en las dos quincenas, desmarca su casilla en la tabla de arriba. Un descuento se quita con ✕.</div>'
+    + '</div>';
 }
 
 function renderNominaSeccion(body){
@@ -2512,9 +2568,11 @@ function renderNominaSeccion(body){
           return '<tr' + (l.aplica ? '' : ' style="opacity:.45;text-decoration:line-through;"') + '>'
             + '<td>' + (auto || cerrada ? '' : '<input type="checkbox" data-lin="' + l.id + '" data-campo="aplica"' + (l.aplica?' checked':'') + ' title="Desmarca si no aplica este mes (ej. perdió el bono de asistencia)">') + '</td>'
             + '<td style="text-align:left;">' + esc(l.concepto)
-              + (l.solo_segunda_quincena ? ' <span style="color:var(--sub);font-size:10.5px;">· 2da quincena</span>' : '')
+              + (l.nota && !['condicional','por dia'].includes(l.nota) ? ' <span style="color:var(--sub);font-size:10.5px;">· ' + esc(l.nota) + '</span>' : '')
               + (l.nota==='condicional' ? ' <span style="color:var(--amber);font-size:10.5px;">· se pierde si falta</span>' : '') + '</td>'
             + '<td style="text-align:left;color:var(--sub);font-size:11px;">' + TIPOS_CONCEPTO[l.tipo] + '</td>'
+            + '<td style="text-align:left;font-size:11px;">' + (auto || cerrada ? '<span style="color:var(--sub);">' + QUINCENAS[quincenaDe(l)] + '</span>'
+                : '<select data-lin="' + l.id + '" data-campo="quincena" style="font-size:11px;">' + opcionesQuincena(quincenaDe(l)) + '</select>') + '</td>'
             + '<td>' + (auto || cerrada ? fmt2(l.cantidad) : '<input type="number" step="0.5" data-lin="' + l.id + '" data-campo="cantidad" value="' + l.cantidad + '">') + '</td>'
             + '<td>' + (auto || cerrada ? fmt2(l.monto_unitario) : '<input type="number" step="0.01" data-lin="' + l.id + '" data-campo="monto_unitario" value="' + l.monto_unitario + '">') + '</td>'
             + '<td style="font-weight:600;">' + signo + fmt2(m) + '</td>'
@@ -2526,15 +2584,17 @@ function renderNominaSeccion(body){
           + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">'
             + '<div style="font-weight:700;font-size:13.5px;">' + esc(e.nombre) + (e.cargo ? ' <span style="color:var(--sub);font-weight:400;">· ' + esc(e.cargo) + '</span>' : '') + '</div>'
             + '<div style="font-size:12px;color:var(--sub);">Sueldo base diario ' + fmtMoney(salarioDiario(e.id)) + (e.fecha_ingreso ? ' · ' + antiguedadAnios(e) + ' año(s) de antigüedad' : ' · sin fecha de ingreso') + '</div></div>'
-          + '<div class="presuScroll"><table class="tablaPresu" style="margin-top:6px;"><thead><tr><th></th><th style="text-align:left;">Concepto</th><th style="text-align:left;">Tipo</th><th>Cant./días</th><th>$ unidad</th><th>$ mes</th><th></th></tr></thead><tbody>'
+          + '<div class="presuScroll"><table class="tablaPresu" style="margin-top:6px;"><thead><tr><th></th><th style="text-align:left;">Concepto</th><th style="text-align:left;">Tipo</th><th style="text-align:left;">Se paga</th><th>Cant./días</th><th>$ unidad</th><th>$ mes</th><th></th></tr></thead><tbody>'
             + delEmpleado.map(fila).join('') + '</tbody></table></div>'
           + (cerrada ? '' : '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">'
+              + '<button class="chip" data-abrir-desc="' + e.id + '" style="background:#c1503f;color:#fff;">➖ Falta o descuento</button>'
               + '<button class="chip" data-agregar-lin="' + e.id + '" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);">➕ Concepto del mes</button>'
               + pasivosLottt(e).map(([k, n])=>'<button class="chip" data-pasivo="' + k + '" data-emp="' + e.id + '" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);">➕ ' + n.split(' (')[0] + '</button>').join('')
             + '</div>')
           + '<div class="comp-item" style="margin-top:8px;"><span class="t">Asignaciones ' + fmtMoney(t.asignaciones) + ' − deducciones ' + fmtMoney(t.deduccion) + ' − retenciones ' + fmtMoney(t.retencion) + '</span>'
             + '<span style="color:var(--green);font-weight:700;">Cobra ' + fmtMoney(t.neto) + bs(t.neto) + '</span></div>'
-          + '<div class="comp-item"><span class="t">1ra quincena ' + fmtMoney(t.q1) + bs(t.q1) + '</span><span>2da quincena ' + fmtMoney(t.q2) + bs(t.q2) + '</span></div>'
+          + (cerrada || descuentoAbierto !== e.id ? '' : formDescuento(e, lin))
+          + cuadroQuincenas(lin, t, bs)
           + (aportes.length ? '<div class="comp-item"><span class="t">Aportes del patrono: ' + aportes.map(a=>esc(a.concepto) + ' ' + fmtMoney(montoLinea(a))).join(' · ') + '</span><span>' + fmtMoney(t.aporte_patronal) + '</span></div>' : '')
           + '</div>';
       }).join('')
@@ -2606,6 +2666,7 @@ function renderNominaSeccion(body){
       const l = nominaLineas.find(x=>x.id===inp.dataset.lin);
       const fila = {};
       fila[inp.dataset.campo] = inp.type==='checkbox' ? inp.checked : (parseFloat(inp.value) || 0);
+      if(inp.dataset.campo === 'quincena') fila.solo_segunda_quincena = fila.quincena === 2;
       const { error } = await db.from('nomina_lineas').update(fila).eq('id', l.id);
       if(error){ alert('No se pudo guardar: ' + error.message); return; }
       await trasCambio(l.empleado_id);
@@ -2630,6 +2691,46 @@ function renderNominaSeccion(body){
       await trasCambio(b.dataset.agregarLin);
     };
   });
+  cont.querySelectorAll('[data-abrir-desc]').forEach(b=>{
+    b.onclick = ()=>{ descuentoAbierto = descuentoAbierto===b.dataset.abrirDesc ? null : b.dataset.abrirDesc; renderSidebar(); };
+  });
+  const fd = document.getElementById('descForm');
+  if(fd){
+    const campo = id=>fd.querySelector('#' + id);
+    const mostrar = ()=>{
+      const tipo = campo('dTipo').value;
+      fd.querySelectorAll('[data-solo]').forEach(d=>{ d.style.display = d.dataset.solo===tipo ? '' : 'none'; });
+    };
+    campo('dTipo').onchange = mostrar;
+    mostrar();
+    campo('dCancelar').onclick = ()=>{ descuentoAbierto = null; renderSidebar(); };
+    campo('dGuardar').onclick = async ()=>{
+      const empId = fd.dataset.emp, tipo = campo('dTipo').value, q = Number(campo('dQuincena').value);
+      const motivo = campo('dMotivo').value.trim() || null;
+      let fila;
+      if(tipo === 'dias'){
+        const dias = parseFloat(campo('dDias').value) || 0, porDia = parseFloat(campo('dPorDia').value) || 0;
+        if(dias <= 0 || porDia <= 0){ alert('Indica los días y cuánto se descuenta por día.'); return; }
+        fila = {concepto:'Faltó ' + dias.toLocaleString('es-VE') + ' día(s)', cantidad:dias, monto_unitario:porDia};
+      } else if(tipo === 'pierde'){
+        const l = nominaLineas.find(x=>x.id===campo('dConcepto').value);
+        if(!l){ alert('Elige el concepto que pierde.'); return; }
+        const parte = Math.round(partesQuincena(l)[q === 1 ? 0 : 1] * 100) / 100;
+        if(parte <= 0){ alert('«' + l.concepto + '» no se paga el ' + (q === 1 ? '15' : '30') + '. Elige la otra quincena.'); return; }
+        fila = {concepto:'Pierde: ' + l.concepto, cantidad:1, monto_unitario:parte};
+      } else {
+        const nombre = campo('dNombre').value.trim(), monto = parseFloat(campo('dMonto').value) || 0;
+        if(!nombre || monto <= 0){ alert('Indica qué se descuenta y el monto.'); return; }
+        fila = {concepto:nombre, cantidad:1, monto_unitario:monto};
+      }
+      campo('dGuardar').disabled = true;
+      const { error } = await db.from('nomina_lineas').insert(Object.assign({nomina_id:nominaMes.id, empleado_id:empId, orden:800,
+        tipo:'deduccion', aplica:true, quincena:q, solo_segunda_quincena:q===2, nota:motivo}, fila));
+      if(error){ alert('No se pudo guardar el descuento: ' + error.message); campo('dGuardar').disabled = false; return; }
+      descuentoAbierto = null;
+      await trasCambio(empId);
+    };
+  }
   cont.querySelectorAll('[data-pasivo]').forEach(b=>{
     b.onclick = async ()=>{
       const e = empleadosCache.find(x=>x.id===b.dataset.emp);
@@ -2639,7 +2740,7 @@ function renderNominaSeccion(body){
         ? {concepto:p[1], cantidad:1, monto_unitario:0}
         : {concepto:p[1], cantidad:p[2], monto_unitario:diario};
       const { error } = await db.from('nomina_lineas').insert(Object.assign({nomina_id:nominaMes.id, empleado_id:e.id,
-        orden:700, tipo:'pago_pasivo', solo_segunda_quincena:true}, fila));
+        orden:700, tipo:'pago_pasivo', quincena:2, solo_segunda_quincena:true}, fila));
       if(error){ alert('No se pudo agregar: ' + error.message); return; }
       await trasCambio(e.id);
     };
@@ -2666,7 +2767,7 @@ function pintarEmpleados(cont){
     + '<td style="text-align:center;"><input type="checkbox" data-c="por_dia"' + (c.por_dia?' checked':'') + '></td>'
     + '<td><input type="number" step="1" data-c="dias_defecto" value="' + (c.dias_defecto||0) + '"></td>'
     + '<td style="text-align:center;"><input type="checkbox" data-c="condicional"' + (c.condicional?' checked':'') + '></td>'
-    + '<td style="text-align:center;"><input type="checkbox" data-c="solo_segunda_quincena"' + (c.solo_segunda_quincena?' checked':'') + '></td>'
+    + '<td><select data-c="quincena">' + opcionesQuincena(quincenaDe(c)) + '</select></td>'
     + '<td><button class="accionBtn" data-quitar-c="' + i + '" title="Quitar">✕</button></td></tr>';
 
   let html = empleadosCache.map(e=>{
@@ -2695,7 +2796,7 @@ function pintarEmpleados(cont){
   const ed = document.getElementById('empEditor');
   if(ed){
     const e = empleadosCache.find(x=>x.id===empleadoEditando);
-    let filas = conceptosEmpleado.filter(c=>c.empleado_id===e.id).map(c=>Object.assign({}, c));
+    let filas = conceptosEmpleado.filter(c=>c.empleado_id===e.id).map(c=>Object.assign({}, c, {quincena: quincenaDe(c)}));
     const leer = ()=>{
       ed.querySelectorAll('tr[data-fila]').forEach(tr=>{
         const f = filas[Number(tr.dataset.fila)];
@@ -2708,7 +2809,7 @@ function pintarEmpleados(cont){
     const pintar = ()=>{
       ed.innerHTML = '<div class="form-row two"><div><label>Fecha de ingreso</label><input type="date" id="empIngreso" value="' + (e.fecha_ingreso||'') + '"></div>'
         + '<div><label>Cargo</label><input type="text" id="empCargo" value="' + esc(e.cargo||'').replace(/"/g,'&quot;') + '"></div></div>'
-        + '<div class="presuScroll"><table class="tablaPresu"><thead><tr><th>Concepto</th><th>Tipo</th><th>$ mes o día</th><th>Por día</th><th>Días</th><th title="Se pierde si falta">Condic.</th><th>Solo 2da q.</th><th></th></tr></thead><tbody>'
+        + '<div class="presuScroll"><table class="tablaPresu"><thead><tr><th>Concepto</th><th>Tipo</th><th>$ mes o día</th><th>Por día</th><th>Días</th><th title="Se pierde si falta">Condic.</th><th>Se paga</th><th></th></tr></thead><tbody>'
         + filas.map(filaConcepto).join('') + '</tbody></table></div>'
         + '<div style="display:flex;gap:8px;margin-top:8px;">'
         + '<button class="chip" id="empAgregarC" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);flex:1;padding:10px;">➕ Agregar concepto</button>'
@@ -2716,7 +2817,7 @@ function pintarEmpleados(cont){
         + '<div class="assumption" style="margin-top:6px;">Solo el sueldo base es salarial: sobre él se calculan el seguro social y los pasivos. '
         + 'Los cambios valen desde la próxima nómina que se abra.</div>';
       ed.querySelectorAll('[data-quitar-c]').forEach(b=>{ b.onclick = ()=>{ leer(); filas.splice(Number(b.dataset.quitarC), 1); pintar(); }; });
-      document.getElementById('empAgregarC').onclick = ()=>{ leer(); filas.push({id:null, nombre:'', tipo:'no_salarial', monto:0, por_dia:false, dias_defecto:0, condicional:false, solo_segunda_quincena:false}); pintar(); };
+      document.getElementById('empAgregarC').onclick = ()=>{ leer(); filas.push({id:null, nombre:'', tipo:'no_salarial', monto:0, por_dia:false, dias_defecto:0, condicional:false, quincena:0}); pintar(); };
       document.getElementById('empGuardarC').onclick = async ()=>{
         leer();
         if(filas.some(f=>!f.nombre)){ alert('Cada concepto necesita un nombre.'); return; }
@@ -2732,7 +2833,8 @@ function pintarEmpleados(cont){
           for(let i=0; i<filas.length; i++){
             const f = filas[i];
             const fila = {empleado_id:e.id, orden:i+1, nombre:f.nombre, tipo:f.tipo, monto:f.monto, por_dia:f.por_dia,
-                          dias_defecto:f.dias_defecto, condicional:f.condicional, solo_segunda_quincena:f.solo_segunda_quincena};
+                          dias_defecto:f.dias_defecto, condicional:f.condicional,
+                          quincena:Number(f.quincena)||0, solo_segunda_quincena:Number(f.quincena)===2};
             const r = f.id ? await db.from('empleado_conceptos').update(fila).eq('id', f.id)
                            : await db.from('empleado_conceptos').insert(fila);
             if(r.error) throw r.error;
