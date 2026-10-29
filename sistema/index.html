@@ -2469,7 +2469,6 @@ function pasivosLottt(e){
 
 function renderNominaSeccion(body){
   const per = periodoActual();
-  if(!per) return;
   const cerrada = nominaMes && nominaMes.estado === 'cerrada';
   const tasa = nominaMes && Number(nominaMes.tasa_bcv) || 0;
   const tot = totalesNomina(null);
@@ -2478,7 +2477,7 @@ function renderNominaSeccion(body){
 
   const det = document.createElement('details');
   det.style.marginTop = '16px';
-  det.open = !!nominaMes && !cerrada;
+  det.open = (!!nominaMes && !cerrada) || !per;
   det.innerHTML =
     '<summary class="tituloCuenta" style="--c:#7a5aa6;"><span class="tcIcono">👥</span>'
     + 'Nómina · ' + empleadosCache.length + ' empleado(s)'
@@ -2489,6 +2488,9 @@ function renderNominaSeccion(body){
 
   if(!empleadosCache.length){
     cont.innerHTML = '<div class="empty">Todavía no hay empleados cargados.</div>';
+  } else if(!per){
+    cont.innerHTML = '<div class="assumption">Todavía no hay un mes abierto. Ya puedes cargar los empleados y sus conceptos fijos; '
+      + 'la nómina del mes se abre cuando abras el mes.</div>';
   } else if(!nominaMes){
     cont.innerHTML = '<div class="assumption">La nómina de ' + mesLegible(mesActual)
       + ' aún no se ha abierto. Al abrirla, cada empleado entra con sus conceptos fijos (sueldo base, cesta ticket, bonos…) '
@@ -3583,7 +3585,7 @@ function renderCuentasCompleto(body){
     catch(e){ alert('No se pudo abrir el mes: ' + (e.message||e)); }
   };
 
-  if(!per){ renderPresupuestoSeccion(body); return; }
+  if(!per){ renderNominaSeccion(body); renderPresupuestoSeccion(body); return; }
 
   const cerrado = per.estado === 'cerrado';
   const emitido = per.estado !== 'abierto';
