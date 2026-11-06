@@ -1049,6 +1049,7 @@ async function arrancarConDatos(){
   saveFullSnapshot();
   if(puedeEditar()){
     try{ await cargarCuentas(); }catch(e){ console.error(e); }
+    renderSidebar();   // las cuotas de la lista salen del presupuesto, que llega con las cuentas
     pintarAvisoReportados();
     if(!window.__revisandoReportados){ window.__revisandoReportados = setInterval(revisarReportados, 3 * 60 * 1000); }
   }
@@ -3150,6 +3151,23 @@ function presupuestoTotal(p){
 }
 function cuotaPresupuesto(p){
   return Math.round(presupuestoTotal(p) / 12 * 100) / 100;
+}
+// cuota de un apartamento segun el presupuesto vigente y su alicuota, igual que al
+// emitir: la alicuota se normaliza contra la suma de todas para que el reparto de 100 %.
+// Sin presupuesto cargado se usan los montos guardados en la ficha.
+function cuotasApt(a){
+  const p = presupuestoCache;
+  if(!p || !a) return {mensual: a ? a.cuota_mensual : null, anual: a ? a.cuota_anual : null, calculada: false};
+  const suma = apartments.reduce((s,x)=>s + (Number(x.alicuota) || 0), 0);
+  const f = suma > 0 ? (Number(a.alicuota) || 0) / suma : 0;
+  return {
+    mensual: Math.round(cuotaPresupuesto(p) * f * 100) / 100,
+    anual:   Math.round(presupuestoTotal(p) * f * 100) / 100,
+    calculada: true
+  };
+}
+function fmtCuota(n){
+  return n == null ? '-' : (Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 // posicion del mes dentro del año del presupuesto: 0 = primer mes (octubre)
 function indiceMesPresupuesto(p, periodoId){
@@ -5681,7 +5699,7 @@ function renderList(body, q){
     card.innerHTML = '<div class="idrow"><span class="idlabel">'+dIcon+shellyIcon+a.id+bellHtml+'</span>'+
       '<span class="badge '+estadoBadgeClass(a.estado)+'">'+estadoLabel(a.estado)+'</span></div>'+
       '<div class="owner">'+(a.propietario||'Sin propietario asignado')+'</div>'+
-      '<div class="meta">'+(a.total_m2||'-')+' m² · Cuota mensual $'+(a.cuota_mensual!=null?a.cuota_mensual:'-')+'</div>'+deudaHtml+projDebtHtml+alquiladoHtml+envioHtml;
+      '<div class="meta">'+(a.total_m2||'-')+' m² · Cuota mensual $'+fmtCuota(cuotasApt(a).mensual)+'</div>'+deudaHtml+projDebtHtml+alquiladoHtml+envioHtml;
     card.onclick = ()=>{ openFichaApt(a); };
 
     const btnRow = document.createElement('div');
@@ -6180,9 +6198,10 @@ function renderFichaDatos(body){
     <h3 class="section">Alícuota y cuotas</h3>
     <div class="form-row"><label>Alícuota (%)</label><input id="fm_alicuota" type="number" step="0.0001" value="${apt.alicuota!=null?apt.alicuota:''}" ${dis}></div>
     <div class="form-row two">
-      <div><label>Cuota anual USD</label><input id="fm_cuotaanual" type="number" step="0.01" value="${apt.cuota_anual!=null?apt.cuota_anual:''}" ${dis}></div>
-      <div><label>Cuota mensual USD</label><input id="fm_cuotamensual" type="number" step="0.01" value="${apt.cuota_mensual!=null?apt.cuota_mensual:''}" ${dis}></div>
+      <div><label>Cuota anual USD</label><input id="fm_cuotaanual" type="number" step="0.01" value="${cuotasApt(apt).anual!=null?cuotasApt(apt).anual:''}" ${cuotasApt(apt).calculada?'disabled':dis}></div>
+      <div><label>Cuota mensual USD</label><input id="fm_cuotamensual" type="number" step="0.01" value="${cuotasApt(apt).mensual!=null?cuotasApt(apt).mensual:''}" ${cuotasApt(apt).calculada?'disabled':dis}></div>
     </div>
+    ${cuotasApt(apt).calculada ? '<div class="assumption">Calculadas con el presupuesto ' + esc(presupuestoCache.id || '') + ' ($' + fmtCuota(presupuestoTotal(presupuestoCache)) + ' al año) y la alícuota. Cambian solas si cambia el presupuesto o la alícuota.</div>' : ''}
     <h3 class="section">Componentes incluidos</h3>
     <div class="comp-list">
       ${apt.componentes.map(c=>'<div class="comp-item"><span class="t">'+c.tipo+'</span><span>'+c.label+'</span></div>').join('')}
@@ -7387,7 +7406,7 @@ function renderResumenTab(body){
   const entregados = apartments.filter(a=>!a.estado).length;
   const sinEntregar = apartments.filter(a=>a.estado==='Vendido sin entregar').length;
   const sinFirmar = apartments.filter(a=>a.estado==='Vendido sin firmar').length;
-  const sumaCuotaAnual = apartments.reduce((s,a)=>s+(a.cuota_anual||0),0);
+  const sumaCuotaAnual = apartments.reduce((s,a)=>s+(Number(cuotasApt(a).anual)||0),0);
   const sumaAlicuota = apartments.reduce((s,a)=>s+(a.alicuota||0),0);
   const deudaTotal = deudaRows.reduce((s,r)=>s+(r.monto||0),0);
   const aptsConDeuda = apartments.filter(a=>findDeuda(a)).length;
@@ -7579,7 +7598,7 @@ function responderConsulta(rawQuery){
       return 'Apartamento '+apt.id+':\n• Construcción: '+(apt.construccion!=null?apt.construccion+' m²':'sin dato')+'\n• Terraza: '+(apt.terraza!=null?apt.terraza+' m²':'sin dato')+'\n• Total: '+(apt.total_m2!=null?apt.total_m2+' m²':'sin dato');
     }
     if(wantsAlicuota){
-      return 'Apartamento '+apt.id+':\n• Alícuota: '+(apt.alicuota!=null?(apt.alicuota*100).toFixed(2)+'%':'sin dato')+'\n• Cuota mensual: '+(apt.cuota_mensual!=null?fmtMoney(apt.cuota_mensual):'sin dato')+'\n• Cuota anual: '+(apt.cuota_anual!=null?fmtMoney(apt.cuota_anual):'sin dato');
+      return 'Apartamento '+apt.id+':\n• Alícuota: '+(apt.alicuota!=null?(apt.alicuota*100).toFixed(2)+'%':'sin dato')+'\n• Cuota mensual: '+(cuotasApt(apt).mensual!=null?fmtMoney(cuotasApt(apt).mensual):'sin dato')+'\n• Cuota anual: '+(cuotasApt(apt).anual!=null?fmtMoney(cuotasApt(apt).anual):'sin dato');
     }
     if(wantsEstado){
       return 'Apartamento '+apt.id+': estado = '+(apt.estado||'Entregado');
@@ -8185,8 +8204,10 @@ document.getElementById('btnGuardarFicha').addEventListener('click', async ()=>{
   apt.terraza = parseFloat(document.getElementById('fm_terraza').value) || null;
   apt.total_m2 = parseFloat(document.getElementById('fm_totalm2').value) || null;
   apt.alicuota = parseFloat(document.getElementById('fm_alicuota').value) || null;
-  apt.cuota_anual = parseFloat(document.getElementById('fm_cuotaanual').value) || null;
-  apt.cuota_mensual = parseFloat(document.getElementById('fm_cuotamensual').value) || null;
+  if(!cuotasApt(apt).calculada){
+    apt.cuota_anual = parseFloat(document.getElementById('fm_cuotaanual').value) || null;
+    apt.cuota_mensual = parseFloat(document.getElementById('fm_cuotamensual').value) || null;
+  }
   await saveApt(apt);
   fichaEditMode = false;
   renderFichaBody();
