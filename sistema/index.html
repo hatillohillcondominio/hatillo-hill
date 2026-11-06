@@ -4614,7 +4614,15 @@ function renderUsuariosSeccion(body){
             + '</select></div>')
           + (p.id === miPerfil.id || !asignables.includes(p.rol) ? '' : '<div style="display:flex;gap:6px;">'
             + '<button class="chip" data-us-clave="' + p.id + '" style="background:var(--panel2);flex:1;">🔑 Nueva clave</button>'
+            + '<button class="chip" data-us-correo="' + p.id + '" style="background:var(--panel2);flex:1;">✉️ Cambiar correo</button>'
             + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>')
+          + (() => {
+              // aviso si el correo de la ficha ya no es el de la cuenta
+              const a = p.apartamento_id && apartments.find(x=>x.id===p.apartamento_id);
+              const fc = a ? ((a.correo || '').split(/[;,\s]+/)[0] || '').toLowerCase() : '';
+              return fc && fc !== String(p.correo || '').toLowerCase() && asignables.includes(p.rol) && p.id !== miPerfil.id
+                ? '<div class="assumption" style="margin:0;color:var(--amber);">La ficha tiene otro correo: ' + escHtml(fc) + '. Con “✉️ Cambiar correo” puedes pasarlo a la cuenta.</div>' : '';
+            })()
           + '<div data-us-res="' + p.id + '"></div></div>').join('');
 
     host.querySelectorAll('[data-us-activo]').forEach(b=>{ b.onclick = async ()=>{
@@ -4636,6 +4644,22 @@ function renderUsuariosSeccion(body){
       const { error } = await db.from('perfiles').update({ rol: sel.value }).eq('id', p.id);
       if(error){ sel.disabled = false; sel.value = p.rol; alert('No se pudo cambiar el rol: ' + error.message); return; }
       await pintarLista();
+    }; });
+    host.querySelectorAll('[data-us-correo]').forEach(b=>{ b.onclick = async ()=>{
+      const p = perfiles.find(x=>x.id===b.dataset.usCorreo);
+      const a = p.apartamento_id && apartments.find(x=>x.id===p.apartamento_id);
+      const sugerido = a ? ((a.correo || '').split(/[;,\s]+/)[0] || '') : '';
+      const nuevo = (prompt('Correo nuevo para entrar (hoy entra con ' + p.correo + '):', sugerido || p.correo) || '').trim().toLowerCase();
+      if(!nuevo || nuevo === String(p.correo).toLowerCase()) return;
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(nuevo)){ alert('Ese correo no es válido.'); return; }
+      if(!confirm('¿Cambiar el correo de entrada de ' + p.correo + ' a ' + nuevo + '?\n\nLa clave sigue siendo la misma; desde ahora entra con el correo nuevo.')) return;
+      b.disabled = true;
+      try{
+        await llamarUsuarios({ accion: 'correo', id: p.id, correo: nuevo });
+        await pintarLista();
+        const res = host.querySelector('[data-us-res="' + p.id + '"]');
+        if(res) res.innerHTML = '<div class="assumption" style="margin:0;color:var(--green);">✓ Ahora entra con ' + escHtml(nuevo) + ' y la misma clave.</div>';
+      }catch(e){ b.disabled = false; alert('No se pudo cambiar el correo: ' + (e.message||e)); }
     }; });
     host.querySelectorAll('[data-us-clave]').forEach(b=>{ b.onclick = async ()=>{
       const p = perfiles.find(x=>x.id===b.dataset.usClave);
