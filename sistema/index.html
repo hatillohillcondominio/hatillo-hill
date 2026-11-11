@@ -5498,9 +5498,23 @@ function renderUsuariosSeccion(body){
     if(error){ host.innerHTML = '<div class="empty">No se pudieron leer los usuarios: ' + escHtml(error.message) + '</div>'; return; }
     const perfiles = data || [];
     const conUsuario = new Set(perfiles.filter(p=>p.activo && p.apartamento_id).map(p=>p.apartamento_id));
-    const sinUsuario = apartments.filter(a=>!conUsuario.has(a.id)).length;
+    const conCuenta = new Set(perfiles.filter(p=>p.apartamento_id).map(p=>p.apartamento_id));
+    const ordenados = apartments.slice().sort((a,b)=>a.id.localeCompare(b.id));
+    const faltan = ordenados.filter(a=>!conUsuario.has(a.id));
+    // en "Crear un usuario" solo quedan los apartamentos que todavía no tienen cuenta
+    const valorApt = selApt.value;
+    selApt.innerHTML = '<option value="">— elegir —</option>' + ordenados.filter(a=>!conCuenta.has(a.id))
+      .map(a=>'<option value="'+escHtml(a.id)+'">'+escHtml(a.id)+' · '+escHtml(a.propietario||'')+'</option>').join('');
+    if(valorApt && !conCuenta.has(valorApt)) selApt.value = valorApt;
     host.innerHTML = '<h3 class="section" style="margin-top:14px;">Usuarios (' + perfiles.length + ')</h3>'
-      + '<div class="assumption" style="margin-top:0;">' + sinUsuario + ' de ' + apartments.length + ' apartamentos aún no tienen usuario activo.</div>'
+      + (faltan.length
+          ? '<div class="assumption" style="margin-top:0;"><b>Faltan ' + faltan.length + ' de ' + apartments.length + ' apartamentos por tener usuario activo.</b> Toca uno para crearle su usuario:</div>'
+            + '<div style="display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 10px;">' + faltan.map(a=>{
+                const inactivo = conCuenta.has(a.id);
+                return '<button class="chip" data-us-falta="' + escHtml(a.id) + '" style="background:var(--panel2);font-size:12px;" title="' + escHtml(a.propietario || '') + '">'
+                  + escHtml(a.id) + ' · ' + escHtml((a.propietario || '').split(' ').slice(0,2).join(' ')) + (inactivo ? ' <span style="color:var(--red);">(inactivo)</span>' : '') + '</button>';
+              }).join('') + '</div>'
+          : '<div class="assumption" style="margin-top:0;color:var(--green);">✓ Todos los apartamentos tienen usuario activo.</div>')
       + perfiles.map(p=>'<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:5px;' + (p.activo ? '' : 'opacity:.6;') + '">'
           + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + escHtml(p.nombre || '') + '</span>'
           + '<span style="font-size:11px;font-weight:700;color:' + (p.activo ? 'var(--green)' : 'var(--red)') + ';">' + (p.activo ? 'activo' : 'inactivo') + '</span></div>'
@@ -5521,6 +5535,21 @@ function renderUsuariosSeccion(body){
             })()
           + '<div data-us-res="' + p.id + '"></div></div>').join('');
 
+    host.querySelectorAll('[data-us-falta]').forEach(b=>{ b.onclick = ()=>{
+      const id = b.dataset.usFalta;
+      if(conCuenta.has(id)){
+        // ya tiene cuenta pero está desactivada: se activa en su tarjeta, no se crea otra
+        const p = perfiles.find(x=>x.apartamento_id === id);
+        const res = host.querySelector('[data-us-res="' + p.id + '"]');
+        if(res){ res.scrollIntoView({behavior:'smooth', block:'center'}); res.innerHTML = '<div class="assumption" style="color:var(--amber);">Este apartamento ya tiene usuario, pero está desactivado: usa “▶ Activar”.</div>'; }
+        return;
+      }
+      selRol.value = 'vecino'; selRol.onchange();
+      selApt.value = id; selApt.onchange();
+      const box = sec.querySelector('#usNuevoBox');
+      box.open = true;
+      box.scrollIntoView({behavior:'smooth', block:'start'});
+    }; });
     host.querySelectorAll('[data-us-activo]').forEach(b=>{ b.onclick = async ()=>{
       const p = perfiles.find(x=>x.id===b.dataset.usActivo);
       if(p.activo && !confirm('¿Desactivar el usuario ' + p.correo + '? Ya no podrá entrar.')) return;
