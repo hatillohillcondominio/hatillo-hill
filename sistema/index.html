@@ -5648,9 +5648,9 @@ const UNIDADES = ['unidad', 'par', 'juego', 'caja', 'paquete', 'bolsa', 'saco', 
 // ---------- Soporte de un gasto: factura o recibo adjunto (sql/28) ----------
 // La foto o el PDF va al bucket privado "comprobantes"; en el gasto queda la
 // ruta, el numero de factura y el proveedor (con su RIF o cedula en su ficha).
-// Comisiones del banco y servicios pagados en línea (luz, agua) no traen factura:
+// Comisiones del banco, servicios pagados en línea (luz, agua) y sueldos no traen factura:
 // su soporte son las referencias de los movimientos del banco conciliados con el gasto.
-const CATEGORIAS_SOPORTE_BANCO = ['bancarios', 'electricidad', 'agua'];
+const CATEGORIAS_SOPORTE_BANCO = ['bancarios', 'electricidad', 'agua', 'personal'];
 const soporteEsBanco = g=>CATEGORIAS_SOPORTE_BANCO.includes(g.categoria_id);
 let refsBancoGasto = {};      // gasto_id -> [{referencia, fecha, monto}] de movimientos_banco
 async function cargarRefsBanco(){
