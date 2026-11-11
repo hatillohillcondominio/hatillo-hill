@@ -2401,6 +2401,19 @@ async function conciliarAutomatico(){
       const cand = (pg.data || []).filter(p=>!pagosUsados.has(p.id) && mismaReferencia(p.referencia, m.referencia)
         && (c.moneda === 'VES' ? (p.monto_bs == null || Math.abs(Number(p.monto_bs) - monto) < 1) : Math.abs(Number(p.monto) - monto) < 0.01));
       if(cand.length === 1){ campos = {pago_id: cand[0].id}; pagosUsados.add(cand[0].id); }
+      else if(!cand.length){
+        // un ingreso fijo (WOW...) se reconoce por el texto del banco y se registra solo
+        const f = fijoDeMovimiento(m);
+        if(f){
+          try{
+            let tasa = null;
+            if(c.moneda === 'VES'){ const t = await tasaDelDia(m.fecha); if(!t) continue; tasa = t.tasa; }
+            await registrarIngresoDeMovimiento(m, conceptoFijo(f, m.fecha), f, tasa);
+            n++;
+          }catch(e){}
+          continue;
+        }
+      }
     } else {
       const cand = (eg.data || []).filter(e=>!egresosUsados.has(e.id)
         && (c.moneda === 'VES' ? Math.abs(Number(e.monto_bs) - monto) < 0.01 : Math.abs(Number(e.monto_usd) - monto) < 0.01)
@@ -2582,8 +2595,49 @@ function renderBancoSeccion(body){
     caja.querySelectorAll('[data-cuadra]').forEach(bt=>{ bt.onclick = ()=>conciliar(mov.id, {[bt.dataset.tipo === 'pago' ? 'pago_id' : 'egreso_id']: bt.dataset.cuadra}); });
   }; });
 
-  lista.querySelectorAll('[data-mov-otro]').forEach(b=>{ b.onclick = ()=>{
+  lista.querySelectorAll('[data-mov-otro]').forEach(b=>{ b.onclick = async ()=>{
     const mov = movimientosCache.find(x=>x.id === b.dataset.movOtro);
+    if(Number(mov.monto) > 0 && otrosIngresosListos){
+      // un ingreso que no es de un vecino: se registra en Otros ingresos y queda conciliado
+      const caja = document.getElementById('mov-' + mov.id);
+      if(caja.dataset.abierto){ caja.innerHTML = ''; delete caja.dataset.abierto; return; }
+      caja.dataset.abierto = '1';
+      const enBs = c.moneda === 'VES';
+      const fSug = fijoDeMovimiento(mov);
+      caja.innerHTML = '<div style="border:1px solid var(--border);border-radius:8px;padding:4px 10px 8px;margin:4px 0 10px;">'
+        + '<div class="form-row"><label>De qué es</label><select data-o="fijo">' + ingresosFijos.map(f=>'<option value="' + f.id + '"' + (fSug && fSug.id === f.id ? ' selected' : '') + '>' + esc(f.nombre) + '</option>').join('')
+          + '<option value=""' + (fSug ? '' : ' selected') + '>Otro</option></select></div>'
+        + '<div class="form-row"><label>Concepto</label><input type="text" data-o="concepto" placeholder="Ej.: intereses del banco"></div>'
+        + (enBs ? '<div class="form-row"><label>Tasa BCV</label><input type="number" step="0.0001" data-o="tasa"></div>' : '')
+        + '<div class="assumption" data-o="calc"></div>'
+        + '<button class="chip" data-o-ok style="background:var(--green);color:#fff;width:100%;margin-top:4px;">➕ Registrar el ingreso y conciliarlo</button></div>';
+      const v = k=>caja.querySelector('[data-o="' + k + '"]');
+      const calc = ()=>{
+        if(!enBs){ v('calc').textContent = 'Se registra por ' + fmtMoney(mov.monto) + '.'; return; }
+        const t = parseFloat(v('tasa').value);
+        v('calc').textContent = t > 0 ? fmtBs(mov.monto) + ' ÷ ' + t + ' = ' + fmtMoney(redondear2(Number(mov.monto) / t)) : 'Falta la tasa.';
+      };
+      const llenar = ()=>{ const f = ingresosFijos.find(x=>x.id === v('fijo').value); if(f) v('concepto').value = conceptoFijo(f, mov.fecha); };
+      v('fijo').onchange = llenar; llenar();
+      if(enBs){
+        v('tasa').oninput = calc;
+        const t = await tasaDelDia(mov.fecha);
+        if(t) v('tasa').value = t.tasa;
+      }
+      calc();
+      caja.querySelector('[data-o-ok]').onclick = async e=>{
+        const concepto = v('concepto').value.trim();
+        if(!concepto){ alert('Escribe el concepto.'); return; }
+        const tasa = enBs ? parseFloat(v('tasa').value) : null;
+        if(enBs && !(tasa > 0)){ alert('Falta la tasa BCV.'); return; }
+        e.target.disabled = true;
+        try{
+          await registrarIngresoDeMovimiento(mov, concepto, ingresosFijos.find(x=>x.id === v('fijo').value) || null, tasa);
+          await refrescarCuentas();
+        }catch(err){ e.target.disabled = false; alert('No se pudo registrar: ' + err.message); }
+      };
+      return;
+    }
     const nota = prompt(Number(mov.monto) > 0
         ? '¿Qué es este ingreso? (no es el pago de un vecino)\nEj.: alquiler de MDS Telecom, intereses del banco'
         : '¿Qué es esta salida?\nEj.: comisión bancaria, Corpoelec (se anota en Pagos aparte)',
@@ -3552,6 +3606,7 @@ async function cargarCuentas(){
   await cargarBanco();
   await cargarPresupuesto();
   await cargarEgresos();
+  await cargarOtrosIngresos();
   pintarBotonMes();
 }
 
@@ -3989,9 +4044,9 @@ function renderEgresosSeccion(body){
             + '<span>' + fmtMoney(Number(e.monto_usd)) + (e.monto_bs ? ' <span style="color:var(--sub);font-size:11px;">Bs ' + fmt2(e.monto_bs) + '</span>' : '')
             + (puedeEditar() ? ' <button class="accionBtn" data-borrar-egreso="' + e.id + '" title="Anular este pago">✕</button>' : '') + '</span></div>').join('')
         : '<div class="empty">Todavía no hay pagos este mes.</div>')
-    + '<div class="presuControl"><span>' + mesLegible(mesActual) + ': cobrado a los vecinos ' + fmtMoney(cobradoMes) + ' − pagado ' + fmtMoney(pagadoMesUsd)
+    + '<div class="presuControl"><span>' + mesLegible(mesActual) + ': cobrado a los vecinos ' + fmtMoney(cobradoMes) + (otrosIngresosMes.length ? ' + otros ingresos ' + fmtMoney(totalOtrosIngresos()) : '') + ' − pagado ' + fmtMoney(pagadoMesUsd)
       + (pagadoMesBs ? ' (Bs ' + fmt2(pagadoMesBs) + ')' : '') + '</span>'
-      + '<b style="color:' + (cobradoMes - pagadoMesUsd >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + (cobradoMes - pagadoMesUsd >= 0 ? '+' : '−') + fmtMoney(Math.abs(cobradoMes - pagadoMesUsd)) + '</b></div>';
+      + '<b style="color:' + (cobradoMes + totalOtrosIngresos() - pagadoMesUsd >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + (cobradoMes + totalOtrosIngresos() - pagadoMesUsd >= 0 ? '+' : '−') + fmtMoney(Math.abs(cobradoMes + totalOtrosIngresos() - pagadoMesUsd)) + '</b></div>';
 
   sec.querySelectorAll('[data-pagar]').forEach(b=>{ b.onclick = ()=>{ egresoAbierto = b.dataset.pagar; renderSidebar(); }; });
   if(avisoNomina){
@@ -4363,6 +4418,133 @@ function renderAuditoriaSeccion(body){
   cargar(true);
 }
 
+// ---------- Otros ingresos (sql/32) ----------
+// Lo que entra y no es cobro de un apartamento: el alquiler de WOW, intereses...
+// No toca el recibo ni la deuda de nadie. Los fijos (ingresos_fijos) se
+// reconocen solos en el estado de cuenta por el texto del banco (patron).
+let otrosIngresosMes = [];
+let ingresosFijos = [];
+let otrosIngresosListos = false;
+async function cargarOtrosIngresos(){
+  otrosIngresosMes = []; ingresosFijos = []; otrosIngresosListos = false;
+  const [oi, fi] = await Promise.all([
+    mesActual ? db.from('otros_ingresos').select('*').eq('periodo_id', mesActual).order('fecha') : Promise.resolve({data:[]}),
+    db.from('ingresos_fijos').select('*').eq('activo', true).order('nombre')
+  ]);
+  if(oi.error || fi.error) return;
+  otrosIngresosListos = true;
+  otrosIngresosMes = oi.data || [];
+  ingresosFijos = fi.data || [];
+}
+// el mes al que va un ingreso: el de su fecha si existe y no está cerrado; si no, el mes abierto
+function periodoParaIngreso(fecha){
+  const mes = String(fecha || '').slice(0,7);
+  const per = periodosCache.find(p=>p.id === mes);
+  if(per && per.estado !== 'cerrado') return mes;
+  const abierto = periodosCache.find(p=>p.estado !== 'cerrado');
+  return abierto ? abierto.id : (per ? mes : null);
+}
+const totalOtrosIngresos = ()=>otrosIngresosMes.reduce((s,x)=>s+Number(x.monto_usd), 0);
+const fijoDeMovimiento = m=>ingresosFijos.find(f=>f.patron && String(m.descripcion || '').toUpperCase().includes(String(f.patron).toUpperCase()));
+const conceptoFijo = (f, fecha)=>f.nombre + ' · ' + mesLegible(String(fecha).slice(0,7));
+
+// registra el ingreso de un movimiento del banco y lo concilia
+async function registrarIngresoDeMovimiento(mov, concepto, fijo, tasa){
+  const c = cuentaDe(mov.cuenta_id || cuentaActual);
+  const enBs = c.moneda === 'VES';
+  const usd = enBs ? redondear2(Number(mov.monto) / tasa) : Number(mov.monto);
+  const { data, error } = await db.from('otros_ingresos').insert({
+    periodo_id: periodoParaIngreso(mov.fecha), fecha: mov.fecha, concepto, fijo_id: fijo ? fijo.id : null,
+    monto_usd: usd, tasa_bcv: enBs ? tasa : null, monto_bs: enBs ? Number(mov.monto) : null,
+    forma: enBs ? 'Transferencia Bs' : 'Depósito en cuenta $', referencia: mov.referencia || null,
+    nota: 'Tomado del estado de cuenta del banco' + (fijo && fijo.pagador ? ' · pagó ' + fijo.pagador : ''),
+    registrado_por: miPerfil.id
+  }).select('id').single();
+  if(error) throw new Error(error.message);
+  const up = await db.from('movimientos_banco').update({otro_ingreso_id: data.id, nota: 'Otro ingreso: ' + concepto,
+    conciliado: true, conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()}).eq('id', mov.id);
+  if(up.error) throw new Error(up.error.message);
+  return usd;
+}
+
+function renderOtrosIngresosSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  if(!otrosIngresosListos){
+    sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#3d8a5f;"><span class="tcIcono">➕</span>Otros ingresos</h3>'
+      + '<div class="assumption">Falta ejecutar <b>sql/32_otros_ingresos.sql</b> en Supabase.</div>';
+    body.appendChild(sec); return;
+  }
+  const total = otrosIngresosMes.reduce((s,x)=>s+Number(x.monto_usd), 0);
+  const pendientesFijos = ingresosFijos.filter(f=>!otrosIngresosMes.some(x=>x.fijo_id === f.id));
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#3d8a5f;"><span class="tcIcono">➕</span>Otros ingresos de ' + esc(mesLegible(mesActual)) + '</h3>'
+    + '<div class="assumption" style="margin-top:0;">Lo que entra y no es pago de un apartamento. No cambia el recibo ni la deuda de nadie.</div>'
+    + pendientesFijos.map(f=>'<div class="comp-item"><span class="t">⏳ <b>' + esc(f.nombre) + '</b> todavía no ha pagado este mes'
+        + (f.pagador ? ' <span style="color:var(--dim);">(' + esc(f.pagador) + ')</span>' : '') + '</span><span style="white-space:nowrap;">' + fmtMoney(f.monto_usd) + '</span></div>').join('')
+    + (otrosIngresosMes.length
+        ? otrosIngresosMes.map(x=>'<div class="comp-item"><span class="t">' + fechaCorta(x.fecha) + ' · ' + esc(x.concepto)
+            + (x.monto_bs ? ' <span style="color:var(--dim);">(' + fmtBs(x.monto_bs) + ' a ' + Number(x.tasa_bcv).toLocaleString('es-VE') + ')</span>' : '')
+            + (x.referencia ? ' <span style="color:var(--dim);">· ref. ' + esc(x.referencia) + '</span>' : '') + '</span>'
+            + '<span style="white-space:nowrap;color:var(--green);">' + fmtMoney(x.monto_usd)
+            + (puedeDinero() ? ' <button class="accionBtn" data-oi-borrar="' + x.id + '" title="Eliminar">✕</button>' : '') + '</span></div>').join('')
+          + '<div class="comp-item"><span class="t"><b>Total otros ingresos</b></span><b style="color:var(--green);">' + fmtMoney(total) + '</b></div>'
+        : '<div class="empty">Ningún otro ingreso registrado este mes.</div>')
+    + '<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:13px;font-weight:700;">✍️ Registrar uno a mano (efectivo u otro que no esté en el banco)</summary>'
+      + '<div class="form-row two"><div><label>Fecha</label><input type="date" id="oiFecha" value="' + new Date().toISOString().slice(0,10) + '"></div>'
+        + '<div><label>De qué es</label><select id="oiFijo">' + ingresosFijos.map(f=>'<option value="' + f.id + '">' + esc(f.nombre) + '</option>').join('') + '<option value="">Otro</option></select></div></div>'
+      + '<div class="form-row"><label>Concepto</label><input type="text" id="oiConcepto"></div>'
+      + '<div class="form-row two"><div><label>Monto ($)</label><input type="number" step="0.01" id="oiMonto"></div>'
+        + '<div><label>Forma</label><select id="oiForma"><option>Transferencia Bs</option><option>Efectivo $</option><option>Depósito en cuenta $</option><option>Otro</option></select></div></div>'
+      + '<div class="form-row two"><div><label>Tasa BCV</label><input type="number" step="0.0001" id="oiTasa"></div>'
+        + '<div><label>Referencia</label><input type="text" id="oiRef"></div></div>'
+      + '<div class="assumption" id="oiCalc"></div>'
+      + '<button class="chip" id="oiGuardar" style="background:#3d8a5f;color:#fff;width:100%;padding:8px;">💾 Guardar ingreso</button>'
+      + '<div class="assumption">Si entró por el banco, mejor concilialo en Banco con “➕ Otro ingreso”: así queda unido a su movimiento.</div>'
+    + '</details>';
+  body.appendChild(sec);
+
+  sec.querySelectorAll('[data-oi-borrar]').forEach(b=>{ b.onclick = async ()=>{
+    const x = otrosIngresosMes.find(i=>i.id === b.dataset.oiBorrar);
+    if(!confirm('¿Eliminar "' + x.concepto + '" por ' + fmtMoney(x.monto_usd) + '?\n\nSi venía del banco, el movimiento vuelve a quedar por conciliar.')) return;
+    await db.from('movimientos_banco').update({otro_ingreso_id: null, conciliado: false, nota: null, conciliado_por: null, conciliado_en: null}).eq('otro_ingreso_id', x.id);
+    const { error } = await db.from('otros_ingresos').delete().eq('id', x.id);
+    if(error){ alert('No se pudo eliminar: ' + error.message); return; }
+    await refrescarCuentas();
+  }; });
+
+  const $ = id=>sec.querySelector('#' + id);
+  if(!$('oiGuardar')) return;
+  const llenarFijo = ()=>{
+    const f = ingresosFijos.find(i=>i.id === $('oiFijo').value);
+    if(f){ $('oiConcepto').value = conceptoFijo(f, $('oiFecha').value); $('oiMonto').value = f.monto_usd; }
+  };
+  const enBs = ()=>$('oiForma').value === 'Transferencia Bs';
+  const calc = ()=>{
+    const usd = parseFloat($('oiMonto').value), t = parseFloat($('oiTasa').value);
+    $('oiCalc').textContent = enBs() ? (usd > 0 && t > 0 ? fmtMoney(usd) + ' × ' + t + ' = ' + fmtBs(redondear2(usd * t)) : 'Falta el monto o la tasa.') : '';
+  };
+  const buscarTasa = async ()=>{ const t = await tasaDelDia($('oiFecha').value); if(t) $('oiTasa').value = t.tasa; calc(); };
+  $('oiFijo').onchange = ()=>{ llenarFijo(); calc(); };
+  $('oiFecha').onchange = ()=>{ llenarFijo(); buscarTasa(); };
+  $('oiMonto').oninput = calc; $('oiTasa').oninput = calc; $('oiForma').onchange = calc;
+  llenarFijo(); buscarTasa();
+  $('oiGuardar').onclick = async e=>{
+    const usd = parseFloat($('oiMonto').value), t = parseFloat($('oiTasa').value);
+    const concepto = $('oiConcepto').value.trim();
+    if(!concepto){ alert('Escribe el concepto.'); return; }
+    if(!(usd > 0)){ alert('El monto debe ser mayor que 0.'); return; }
+    if(enBs() && !(t > 0)){ alert('Falta la tasa BCV.'); return; }
+    e.target.disabled = true;
+    const { error } = await db.from('otros_ingresos').insert({
+      periodo_id: periodoParaIngreso($('oiFecha').value), fecha: $('oiFecha').value, concepto, fijo_id: $('oiFijo').value || null,
+      monto_usd: usd, tasa_bcv: enBs() ? t : null, monto_bs: enBs() ? redondear2(usd * t) : null,
+      forma: $('oiForma').value, referencia: $('oiRef').value.trim() || null, registrado_por: miPerfil.id
+    });
+    if(error){ e.target.disabled = false; alert('No se pudo guardar: ' + error.message); return; }
+    await refrescarCuentas();
+  };
+}
+
 // secciones de Administracion: [clave, etiqueta, color, como empieza su titulo]
 const SUBMENU_ADMIN = [
   ['gastos',      '🧾 Gastos',      '#c1503f', 'Gastos'],
@@ -4393,6 +4575,7 @@ function renderCuentasTab(body){
   const bloqueReportados = renderReportadosSeccion(body);
   renderAvisosSeccion(body);
   renderExportarSeccion(body);
+  renderOtrosIngresosSeccion(body);
   // estas dos leen de la base al pintarse: solo cuando se abren
   if(adminSub === 'proveedores') renderProveedoresSeccion(body);
   if(adminSub === 'inventario') renderInventarioSeccion(body);
@@ -4400,7 +4583,7 @@ function renderCuentasTab(body){
   if(adminSub === 'auditoria') renderAuditoriaSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
-  const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Cuentas del mes': 'cabecera'};
+  const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Otros ingresos': 'cobros', 'Cuentas del mes': 'cabecera'};
   SUBMENU_ADMIN.forEach(([k, , , t])=>{ titulos[t] = k; });
   let actual = 'cabecera';
   Array.from(body.children).forEach(el=>{
