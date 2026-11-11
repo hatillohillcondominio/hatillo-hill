@@ -2210,101 +2210,255 @@ function esc(s){ return (s===null||s===undefined) ? '' : String(s).replace(/[&<>
 // empareja con el pago o el gasto que ya existe. Lo que no empareja es justo
 // lo que hay que revisar: una transferencia que nadie reclamo, un cargo sin
 // factura, un pago que se registro y nunca llego.
+// ---------- Tasa BCV del dia del pago ----------
+// El historico oficial lo publica ve.dolarapi.com (lee la pagina del BCV). Un pago
+// en bolivares se convierte con la tasa del dia en que se hizo; si ese dia no hubo
+// tasa (fin de semana o feriado), con la ultima publicada antes.
+let tasasHist = null;   // [{fecha:'aaaa-mm-dd', tasa}] ordenado por fecha
+async function cargarTasasHist(){
+  if(tasasHist && tasasHist.length) return tasasHist;
+  try{
+    const j = await (await fetch('https://ve.dolarapi.com/v1/historicos/dolares/oficial')).json();
+    tasasHist = (Array.isArray(j) ? j : []).filter(x=>x && x.fecha && Number(x.promedio) > 0)
+      .map(x=>({fecha: String(x.fecha).slice(0,10), tasa: Number(x.promedio)}))
+      .sort((a,b)=>a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  }catch(e){ tasasHist = []; }
+  return tasasHist;
+}
+async function tasaDelDia(fecha){
+  if(!fecha) return null;
+  const h = await cargarTasasHist();
+  let t = null;
+  for(const x of h){ if(x.fecha <= fecha) t = x; else break; }
+  return t;   // {fecha, tasa} o null si no se pudo consultar
+}
+const fechaCorta = f=>f ? String(f).slice(0,10).split('-').reverse().join('/') : '';
+const fmtBs = n=>'Bs ' + (Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+const redondear2 = n=>Math.round(Number(n) * 100) / 100;
+
+// Campos "Monto en Bs" y "Tasa BCV" de un cobro. Con una forma de pago en Bs, la
+// tasa se busca sola segun la fecha del pago y el monto en $ se calcula.
+function htmlCobroBs(p){
+  return '<div id="' + p + 'FilaBs">'
+    + '<div class="form-row"><label>Monto en Bs</label><input type="number" id="' + p + 'Bs" step="0.01" min="0.01" placeholder="Lo que dice el banco"></div>'
+    + '<div class="form-row"><label>Tasa BCV</label><input type="number" id="' + p + 'Tasa" step="0.0001" min="0.0001"></div>'
+    + '<div class="assumption" id="' + p + 'TasaNota" style="margin-top:0;"></div></div>';
+}
+// ids = {forma, fecha, monto, prefijo}. Devuelve una funcion que da {monto_bs, tasa_bcv} o un error.
+function conectarCobroBs(ids){
+  const $ = id=>document.getElementById(id);
+  const fila = $(ids.prefijo + 'FilaBs'), iBs = $(ids.prefijo + 'Bs'), iTasa = $(ids.prefijo + 'Tasa'), nota = $(ids.prefijo + 'TasaNota');
+  const iForma = $(ids.forma), iFecha = $(ids.fecha), iMonto = $(ids.monto);
+  const enBs = ()=>/\bBs\b/.test(iForma.value);
+  const recalcular = ()=>{
+    const b = parseFloat(iBs.value), t = parseFloat(iTasa.value);
+    if(enBs()) iMonto.value = b > 0 && t > 0 ? redondear2(b / t).toFixed(2) : '';
+  };
+  let pedido = 0;
+  const ponerTasa = async ()=>{
+    if(!enBs() || !iFecha.value) return;
+    const yo = ++pedido;
+    nota.textContent = 'Buscando la tasa BCV…';
+    const t = await tasaDelDia(iFecha.value);
+    if(yo !== pedido) return;
+    if(t){
+      iTasa.value = t.tasa;
+      nota.textContent = 'Tasa BCV del ' + fechaCorta(t.fecha) + (t.fecha !== iFecha.value ? ' (el último día con tasa antes del pago)' : '') + '.';
+    } else nota.textContent = 'No se pudo consultar la tasa: escríbela a mano.';
+    recalcular();
+  };
+  const mostrar = ()=>{
+    fila.style.display = enBs() ? '' : 'none';
+    iMonto.readOnly = enBs();
+    iMonto.title = enBs() ? 'Se calcula con los Bs y la tasa' : '';
+    if(enBs()) ponerTasa();
+  };
+  iForma.addEventListener('change', mostrar);
+  iFecha.addEventListener('change', ponerTasa);
+  iBs.addEventListener('input', recalcular);
+  iTasa.addEventListener('input', ()=>{ nota.textContent = 'Tasa escrita a mano.'; recalcular(); });
+  mostrar();
+  return ()=>{
+    if(!enBs()) return {monto_bs: null, tasa_bcv: null};
+    const b = parseFloat(iBs.value), t = parseFloat(iTasa.value);
+    if(!(b > 0)) return {error: 'Escribe el monto en bolívares.'};
+    if(!(t > 0)) return {error: 'Falta la tasa BCV del día del pago.'};
+    return {monto_bs: redondear2(b), tasa_bcv: t};
+  };
+}
+
+// ---------- Banco: el estado de cuenta contra lo anotado ----------
+// El banco no registra: concilia. Cada movimiento del estado de cuenta se
+// empareja con el cobro o el egreso que ya existe; lo que no empareja es lo
+// que hay que revisar (un pago que nadie reporto, un gasto sin anotar).
 let cuentasBanco = [];
 let cuentaActual = null;
 let movimientosCache = [];
+let saldosCuentas = {};   // id de cuenta -> {saldo, sin_conciliar}
 
 async function cargarBanco(){
-  const ctas = await db.from('cuentas_banco').select('*').eq('activa', true).order('nombre');
+  const [ctas, sal] = await Promise.all([
+    db.from('cuentas_banco').select('*').eq('activa', true).order('nombre'),
+    db.from('v_saldo_cuentas').select('*')
+  ]);
   cuentasBanco = ctas.data || [];
-  if(!cuentaActual && cuentasBanco.length) cuentaActual = cuentasBanco[0].id;
+  saldosCuentas = {};
+  (sal.data || []).forEach(s=>{ saldosCuentas[s.id] = s; });
+  if(!cuentaActual || !cuentasBanco.find(c=>c.id === cuentaActual))
+    cuentaActual = (cuentasBanco.find(c=>c.moneda === 'VES') || cuentasBanco[0] || {}).id || null;
   movimientosCache = [];
   if(cuentaActual){
-    const mv = await db.from('movimientos_banco').select('*')
-      .eq('cuenta_id', cuentaActual).order('fecha', {ascending:false}).limit(200);
-    movimientosCache = mv.data || [];
+    const [pend, ult] = await Promise.all([
+      db.from('movimientos_banco').select('*').eq('cuenta_id', cuentaActual).eq('conciliado', false).order('fecha', {ascending:false}).limit(500),
+      db.from('movimientos_banco').select('*').eq('cuenta_id', cuentaActual).eq('conciliado', true).order('fecha', {ascending:false}).limit(20)
+    ]);
+    movimientosCache = (pend.data || []).concat(ult.data || []);
   }
 }
 
-// Lee lo que se pegue del extracto: una linea por movimiento. Reconoce la fecha
-// en dd/mm/aaaa o aaaa-mm-dd y toma como monto el ultimo numero de la linea;
-// el resto es la descripcion. Un monto negativo es un egreso.
-function parsearExtracto(texto){
-  const filas = [];
-  (texto||'').split('\n').forEach(linea=>{
-    const l = linea.trim();
-    if(!l) return;
-    let fecha = null;
-    let m = l.match(/(\d{4})-(\d{2})-(\d{2})/);
-    if(m){ fecha = m[1]+'-'+m[2]+'-'+m[3]; }
-    else {
-      m = l.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-      if(m){
-        let anio = m[3].length === 2 ? '20'+m[3] : m[3];
-        fecha = anio + '-' + m[2].padStart(2,'0') + '-' + m[1].padStart(2,'0');
-      }
+const cuentaDe = id=>cuentasBanco.find(c=>c.id === id) || {};
+const fmtCuenta = (n, c)=>(c || cuentaDe(cuentaActual)).moneda === 'VES' ? fmtBs(n) : fmtMoney(n);
+const soloDigitos = s=>String(s || '').replace(/\D/g, '');
+// dos referencias son la misma si coinciden sus ultimos 6 digitos (el vecino suele copiar solo el final)
+const mismaReferencia = (a, b)=>{
+  const x = soloDigitos(a), y = soloDigitos(b);
+  return x.length >= 4 && y.length >= 4 && x.slice(-6) === y.slice(-6);
+};
+
+// Lee el .xls que descarga la banca en linea del BNC (sirve tambien .xlsx o .csv
+// con columnas Fecha, Referencia, Debe, Haber y Saldo).
+async function leerEstadoCuenta(file){
+  const wb = XLSX.read(await file.arrayBuffer(), {type: 'array', cellDates: false});
+  const filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header: 1, raw: true, defval: ''});
+  const norm = s=>String(s).normalize('NFD').replace(/[̀-ͯ�]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  let h = -1, col = {};
+  for(let i = 0; i < filas.length && h < 0; i++){
+    const f = filas[i].map(norm);
+    if(f.includes('debe') && f.includes('haber')){
+      h = i;
+      f.forEach((t, j)=>{
+        if(t === 'fecha') col.fecha = j;
+        else if(t.startsWith('referencia')) col.ref = j;
+        else if(t === 'debe') col.debe = j;
+        else if(t === 'haber') col.haber = j;
+        else if(t === 'saldo') col.saldo = j;
+        else if(t.startsWith('descrip')) col.desc = j;
+        else if(t.includes('tipo') && t.includes('operaci')) col.oper = j;
+      });
     }
-    if(!fecha) return;
-    const numeros = l.match(/-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?(?!\d)/g) || [];
-    if(!numeros.length) return;
-    const crudo = numeros[numeros.length-1];
-    // normaliza 1.234,56 y 1,234.56 al mismo numero
-    let limpio = crudo.replace(/\s/g,'');
-    if(/,\d{1,2}$/.test(limpio)) limpio = limpio.replace(/\./g,'').replace(',', '.');
-    else limpio = limpio.replace(/,/g,'');
-    const monto = parseFloat(limpio);
-    if(!isFinite(monto) || monto === 0) return;
-    const desc = l.replace(m ? m[0] : '', '').replace(crudo, '').replace(/\s{2,}/g,' ').trim();
-    const ref = (l.match(/\b\d{6,}\b/) || [])[0] || null;
-    filas.push({fecha, descripcion: desc.slice(0,120) || 'Movimiento', referencia: ref, monto});
-  });
-  return filas;
+  }
+  if(h < 0 || col.fecha === undefined || col.debe === undefined || col.haber === undefined)
+    throw new Error('No encontré las columnas Fecha, Debe y Haber. ¿Es el estado de cuenta del BNC?');
+  // la cuenta que dice el archivo (p. ej. "CUENTA CORRIENTE ***7859")
+  const cuentaArchivo = ((filas.slice(0, h).flat().map(String).join(' ').match(/\*{2,}(\d{3,})/) || [])[1]) || null;
+  const num = v=>typeof v === 'number' ? v : parseFloat(String(v).replace(/\./g, '').replace(',', '.')) || 0;
+  const movs = [];
+  for(let i = h + 1; i < filas.length; i++){
+    const f = filas[i];
+    let fecha = f[col.fecha];
+    if(typeof fecha === 'number'){ const d = XLSX.SSF.parse_date_code(fecha); fecha = d ? d.y + '-' + String(d.m).padStart(2,'0') + '-' + String(d.d).padStart(2,'0') : ''; }
+    else {
+      const m = String(fecha).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      fecha = m ? m[3] + '-' + m[2].padStart(2,'0') + '-' + m[1].padStart(2,'0') : '';
+    }
+    if(!fecha) continue;
+    let ref = col.ref !== undefined ? f[col.ref] : '';
+    ref = typeof ref === 'number' ? String(Math.round(ref)) : String(ref).trim();
+    const monto = redondear2(num(f[col.haber]) - num(f[col.debe]));
+    if(!monto) continue;
+    movs.push({
+      fecha, referencia: ref || null, monto,
+      saldo: col.saldo !== undefined && f[col.saldo] !== '' ? redondear2(num(f[col.saldo])) : null,
+      descripcion: (col.desc !== undefined ? String(f[col.desc]).replace(/\s+/g, ' ').trim() : '').slice(0, 300) || 'Movimiento',
+      operacion: col.oper !== undefined ? String(f[col.oper]).replace(/\s+/g, ' ').trim() || null : null
+    });
+  }
+  return {movs, cuentaArchivo};
 }
 
-// Busca a que pago o gasto puede corresponder un movimiento: mismo monto y
-// fecha cercana. No concilia solo; propone y decide la tesoreria.
+// Empareja solo lo que es seguro: un ingreso con un cobro confirmado de la misma
+// referencia (y el mismo monto en Bs si se sabe), y una salida con un egreso del
+// mismo monto en Bs hecho en esos dias. Devuelve cuantos concilio.
+async function conciliarAutomatico(){
+  const c = cuentaDe(cuentaActual);
+  const pend = movimientosCache.filter(m=>!m.conciliado);
+  if(!pend.length) return 0;
+  const fechas = pend.map(m=>m.fecha).sort();
+  const desde = new Date(new Date(fechas[0]).getTime() - 20*86400000).toISOString().slice(0,10);
+  const hasta = new Date(new Date(fechas[fechas.length-1]).getTime() + 5*86400000).toISOString().slice(0,10);
+  const [pg, eg, usados] = await Promise.all([
+    db.from('pagos').select('id, apartamento_id, fecha, monto, monto_bs, referencia').eq('estado', 'confirmado').gte('fecha', desde).lte('fecha', hasta).limit(1000),
+    db.from('egresos').select('id, fecha, monto_usd, monto_bs, referencia').gte('fecha', desde).lte('fecha', hasta).limit(1000),
+    db.from('movimientos_banco').select('pago_id, egreso_id').or('pago_id.not.is.null,egreso_id.not.is.null').limit(5000)
+  ]);
+  const pagosUsados = new Set((usados.data || []).map(u=>u.pago_id).filter(Boolean));
+  const egresosUsados = new Set((usados.data || []).map(u=>u.egreso_id).filter(Boolean));
+  let n = 0;
+  for(const m of pend){
+    const monto = Math.abs(Number(m.monto));
+    let campos = null;
+    if(Number(m.monto) > 0){
+      const cand = (pg.data || []).filter(p=>!pagosUsados.has(p.id) && mismaReferencia(p.referencia, m.referencia)
+        && (c.moneda === 'VES' ? (p.monto_bs == null || Math.abs(Number(p.monto_bs) - monto) < 1) : Math.abs(Number(p.monto) - monto) < 0.01));
+      if(cand.length === 1){ campos = {pago_id: cand[0].id}; pagosUsados.add(cand[0].id); }
+    } else {
+      const cand = (eg.data || []).filter(e=>!egresosUsados.has(e.id)
+        && (c.moneda === 'VES' ? Math.abs(Number(e.monto_bs) - monto) < 0.01 : Math.abs(Number(e.monto_usd) - monto) < 0.01)
+        && Math.abs(new Date(e.fecha) - new Date(m.fecha)) <= 5*86400000);
+      if(cand.length === 1){ campos = {egreso_id: cand[0].id}; egresosUsados.add(cand[0].id); }
+    }
+    if(!campos) continue;
+    Object.assign(campos, {conciliado: true, conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()});
+    const { error } = await db.from('movimientos_banco').update(campos).eq('id', m.id).eq('conciliado', false);
+    if(!error) n++;
+  }
+  return n;
+}
+
+// Para conciliar a mano: cobros o egresos que podrian ser este movimiento
 async function sugerenciasPara(mov){
+  const c = cuentaDe(cuentaActual);
   const monto = Math.abs(Number(mov.monto));
-  const desde = new Date(new Date(mov.fecha).getTime() - 6*86400000).toISOString().slice(0,10);
+  const desde = new Date(new Date(mov.fecha).getTime() - 10*86400000).toISOString().slice(0,10);
   const hasta = new Date(new Date(mov.fecha).getTime() + 6*86400000).toISOString().slice(0,10);
   if(Number(mov.monto) > 0){
-    const { data } = await db.from('pagos').select('id, apartamento_id, fecha, monto, referencia')
-      .eq('monto', monto).gte('fecha', desde).lte('fecha', hasta).limit(5);
-    return (data||[]).map(p=>({tipo:'pago', id:p.id,
-      texto: p.fecha + ' · ' + p.apartamento_id + ' · ' + fmtMoney(p.monto) + (p.referencia ? ' · ' + p.referencia : '')}));
+    const { data } = await db.from('pagos').select('id, apartamento_id, fecha, monto, monto_bs, referencia')
+      .eq('estado', 'confirmado').gte('fecha', desde).lte('fecha', hasta).limit(500);
+    return (data||[]).filter(p=>mismaReferencia(p.referencia, mov.referencia)
+        || (c.moneda === 'VES' ? Math.abs(Number(p.monto_bs) - monto) < 1 : Math.abs(Number(p.monto) - monto) < 0.01))
+      .slice(0, 6).map(p=>({tipo:'pago', id:p.id,
+        texto: fechaCorta(p.fecha) + ' · ' + p.apartamento_id + ' · ' + fmtMoney(Number(p.monto)) + (p.monto_bs ? ' · ' + fmtBs(p.monto_bs) : '') + (p.referencia ? ' · ref. ' + p.referencia : '')}));
   }
-  const { data } = await db.from('gastos').select('id, descripcion, fecha, monto')
-    .eq('monto', monto).gte('fecha', desde).lte('fecha', hasta).limit(5);
-  return (data||[]).map(g=>({tipo:'gasto', id:g.id,
-    texto: g.fecha + ' · ' + g.descripcion + ' · ' + fmtMoney(g.monto)}));
+  const { data } = await db.from('egresos').select('id, concepto, fecha, monto_usd, monto_bs, referencia')
+    .gte('fecha', desde).lte('fecha', hasta).limit(500);
+  return (data||[]).filter(e=>c.moneda === 'VES' ? Math.abs(Number(e.monto_bs) - monto) < 1 : Math.abs(Number(e.monto_usd) - monto) < 0.01)
+    .slice(0, 6).map(e=>({tipo:'egreso', id:e.id,
+      texto: fechaCorta(e.fecha) + ' · ' + e.concepto + ' · ' + fmtMoney(Number(e.monto_usd)) + (e.monto_bs ? ' · ' + fmtBs(e.monto_bs) : '')}));
 }
 
 function renderBancoSeccion(body){
   const sec = document.createElement('details');
   sec.style.marginTop = '16px';
+  const c = cuentaDe(cuentaActual);
+  const s = saldosCuentas[cuentaActual] || {saldo: c.saldo_inicial || 0, sin_conciliar: 0};
   const sinConciliar = movimientosCache.filter(m=>!m.conciliado);
-  const saldoCuenta = (()=>{
-    const c = cuentasBanco.find(x=>x.id===cuentaActual);
-    if(!c) return 0;
-    return Number(c.saldo_inicial||0) + movimientosCache.reduce((s,m)=>s+Number(m.monto), 0);
-  })();
-
   sec.innerHTML =
     '<summary class="tituloCuenta" style="--c:#2f8a8a;"><span class="tcIcono">🏦</span>Banco'
-    + (cuentasBanco.length ? ' · ' + fmtMoney(saldoCuenta)
-        + (sinConciliar.length ? ' · ' + sinConciliar.length + ' sin conciliar' : ' · todo conciliado') : ' (sin cuentas)')
+    + (cuentasBanco.length ? ' · ' + esc(c.nombre) + ' ' + fmtCuenta(s.saldo, c)
+        + (Number(s.sin_conciliar) ? ' · ' + s.sin_conciliar + ' sin conciliar' : ' · todo conciliado') : ' (sin cuentas)')
     + '</summary><div id="bcCuerpo"></div>';
   body.appendChild(sec);
   const cont = sec.querySelector('#bcCuerpo');
 
   if(!cuentasBanco.length){
     cont.innerHTML =
-      '<div class="assumption">Registra la cuenta del condominio para poder cruzar el estado de cuenta '
-      + 'contra lo que ya está anotado en el sistema.</div>'
-      + '<div class="form-row"><label>Nombre</label><input type="text" id="bcNombre" placeholder="Cuenta corriente"></div>'
+      '<div class="assumption">Registra la cuenta del condominio para poder cruzar el estado de cuenta contra lo que ya está anotado en el sistema.</div>'
+      + '<div class="form-row"><label>Nombre</label><input type="text" id="bcNombre" placeholder="BNC Bs"></div>'
       + '<div class="form-row"><label>Banco</label><input type="text" id="bcBanco"></div>'
       + '<div class="form-row"><label>Número</label><input type="text" id="bcNumero"></div>'
+      + '<div class="form-row"><label>Moneda</label><select id="bcMoneda"><option value="VES">Bolívares</option><option value="USD">Dólares</option></select></div>'
       + '<div class="form-row"><label>Saldo inicial</label><input type="number" step="0.01" id="bcSaldo" value="0"></div>'
+      + '<div class="form-row"><label>Saldo a la fecha</label><input type="date" id="bcFechaSaldo"></div>'
       + '<button class="chip" id="bcCrear" style="background:var(--accent);color:#fff;width:100%;margin-top:8px;">🏦 Registrar la cuenta</button>';
     document.getElementById('bcCrear').onclick = async ()=>{
       const nombre = document.getElementById('bcNombre').value.trim();
@@ -2312,7 +2466,9 @@ function renderBancoSeccion(body){
       const { error } = await db.from('cuentas_banco').insert({
         nombre, banco: document.getElementById('bcBanco').value.trim() || null,
         numero: document.getElementById('bcNumero').value.trim() || null,
-        saldo_inicial: parseFloat(document.getElementById('bcSaldo').value) || 0
+        moneda: document.getElementById('bcMoneda').value,
+        saldo_inicial: parseFloat(document.getElementById('bcSaldo').value) || 0,
+        fecha_saldo: document.getElementById('bcFechaSaldo').value || null
       });
       if(error){ alert('No se pudo registrar: ' + error.message); return; }
       await refrescarCuentas();
@@ -2320,81 +2476,171 @@ function renderBancoSeccion(body){
     return;
   }
 
+  const ultimo = movimientosCache.filter(m=>m.saldo != null).sort((a,b)=>a.fecha < b.fecha ? 1 : -1)[0];
   cont.innerHTML =
-    (cuentasBanco.length > 1
-      ? '<div class="form-row"><label>Cuenta</label><select id="bcCuenta">'
-        + cuentasBanco.map(c=>'<option value="'+c.id+'"'+(c.id===cuentaActual?' selected':'')+'>'+esc(c.nombre)+'</option>').join('')
-        + '</select></div>' : '')
-    + '<div class="comp-item"><span class="t">Saldo según el banco</span><span>' + fmtMoney(saldoCuenta) + '</span></div>'
-    + '<div class="comp-item"><span class="t">Movimientos sin conciliar</span><span'
-      + (sinConciliar.length ? ' style="color:var(--amber);"' : '') + '>' + sinConciliar.length + '</span></div>'
-    + '<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--sub);font-weight:600;padding:4px 0;">Pegar el estado de cuenta</summary>'
-      + '<textarea id="bcPegar" placeholder="Pega aquí las líneas del banco, una por movimiento.&#10;Ej:  05/10/2026  TRANSFERENCIA 0102 1234567  125,50&#10;Los egresos van con signo menos." '
-      + 'style="width:100%;min-height:90px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;padding:8px;margin-top:6px;"></textarea>'
-      + '<button class="chip" id="bcImportar" style="background:var(--accent);color:#fff;width:100%;margin-top:6px;">📥 Cargar movimientos</button>'
-      + '<div id="bcAvisoImport" class="assumption"></div></details>'
+    '<div class="form-row"><label>Cuenta</label><select id="bcCuenta">'
+      + cuentasBanco.map(x=>'<option value="' + x.id + '"' + (x.id === cuentaActual ? ' selected' : '') + '>' + esc(x.nombre)
+        + ' · ' + fmtCuenta((saldosCuentas[x.id] || {}).saldo ?? x.saldo_inicial, x) + '</option>').join('') + '</select></div>'
+    + '<div class="comp-item"><span class="t">Saldo de arranque' + (c.fecha_saldo ? ' al ' + fechaCorta(c.fecha_saldo) : '') + '</span><span>' + fmtCuenta(c.saldo_inicial, c) + '</span></div>'
+    + '<div class="comp-item"><span class="t">Saldo según el sistema</span><span><b>' + fmtCuenta(s.saldo, c) + '</b></span></div>'
+    + '<div class="comp-item"><span class="t">Movimientos sin conciliar</span><span' + (sinConciliar.length ? ' style="color:var(--amber);"' : '') + '>' + sinConciliar.length + '</span></div>'
+    + '<div style="display:flex;gap:6px;margin-top:8px;">'
+      + '<label class="chip" style="background:var(--accent);color:#fff;flex:1;text-align:center;cursor:pointer;">📥 Cargar estado de cuenta'
+        + '<input type="file" id="bcArchivo" accept=".xls,.xlsx,.csv" style="display:none;"></label>'
+      + (sinConciliar.length ? '<button class="chip" id="bcAuto" style="background:var(--green);color:#fff;flex:1;">⚡ Conciliar lo seguro</button>' : '')
+    + '</div>'
+    + '<div id="bcAviso" class="assumption">Descarga en la banca en línea los movimientos de la cuenta (Excel) y cárgalos aquí. '
+      + 'Solo entran los posteriores al saldo de arranque y los repetidos se ignoran.</div>'
     + '<div id="bcLista" style="margin-top:10px;"></div>';
 
-  const selC = document.getElementById('bcCuenta');
-  if(selC) selC.onchange = async ()=>{ cuentaActual = selC.value; await refrescarCuentas(); };
+  document.getElementById('bcCuenta').onchange = async e=>{ cuentaActual = e.target.value; await refrescarCuentas(); };
+  const aviso = document.getElementById('bcAviso');
 
-  document.getElementById('bcImportar').onclick = async ()=>{
-    const filas = parsearExtracto(document.getElementById('bcPegar').value);
-    const aviso = document.getElementById('bcAvisoImport');
-    if(!filas.length){ aviso.textContent = 'No se reconoció ningún movimiento. Cada línea necesita una fecha y un monto.'; return; }
-    const { error } = await db.from('movimientos_banco').upsert(
-      filas.map(f=>Object.assign({cuenta_id: cuentaActual}, f)),
-      {onConflict: 'cuenta_id,fecha,referencia,monto', ignoreDuplicates: true}
-    );
-    if(error){ aviso.textContent = 'No se pudieron cargar: ' + error.message; return; }
-    aviso.textContent = filas.length + ' movimiento(s) leído(s).';
+  document.getElementById('bcArchivo').onchange = async e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    aviso.textContent = 'Leyendo ' + file.name + '…';
+    try{
+      const { movs, cuentaArchivo } = await leerEstadoCuenta(file);
+      if(cuentaArchivo && c.numero && !soloDigitos(c.numero).endsWith(cuentaArchivo)
+         && !confirm('El archivo es de la cuenta ***' + cuentaArchivo + ' y la elegida es ' + c.nombre + ' (' + c.numero + ').\n\n¿Cargarlo igual en ' + c.nombre + '?')){
+        aviso.textContent = 'No se cargó nada.'; return;
+      }
+      const nuevos = movs.filter(m=>!c.fecha_saldo || m.fecha > c.fecha_saldo);
+      const antes = movs.length - nuevos.length;
+      if(!nuevos.length){ aviso.textContent = 'El archivo no trae movimientos posteriores al ' + fechaCorta(c.fecha_saldo) + '.'; return; }
+      const { error } = await db.from('movimientos_banco').upsert(
+        nuevos.map(m=>Object.assign({cuenta_id: cuentaActual}, m)),
+        {onConflict: 'cuenta_id,fecha,referencia,monto', ignoreDuplicates: true});
+      if(error) throw new Error(error.message);
+      await cargarBanco();
+      const auto = await conciliarAutomatico();
+      await cargarBanco();
+      const s2 = saldosCuentas[cuentaActual] || {};
+      const finBanco = nuevos.filter(m=>m.saldo != null).slice(-1)[0];
+      let msj = nuevos.length + ' movimiento(s) leído(s)' + (antes ? ' (' + antes + ' anteriores al saldo de arranque no se cargan)' : '')
+        + '. Se conciliaron solos ' + auto + '.';
+      if(finBanco && Math.abs(Number(s2.saldo) - finBanco.saldo) > 0.01)
+        msj += '\n\n⚠️ El banco dice que el saldo al ' + fechaCorta(finBanco.fecha) + ' es ' + fmtCuenta(finBanco.saldo, c)
+          + ' y el sistema da ' + fmtCuenta(s2.saldo, c) + '. Revisa que no falte un estado de cuenta intermedio.';
+      alert(msj);
+      await refrescarCuentas();
+    }catch(err){ aviso.textContent = 'No se pudo cargar: ' + err.message; }
+  };
+
+  const bAuto = document.getElementById('bcAuto');
+  if(bAuto) bAuto.onclick = async ()=>{
+    bAuto.disabled = true; bAuto.textContent = 'Conciliando…';
+    const n = await conciliarAutomatico();
+    alert(n ? 'Se conciliaron ' + n + ' movimiento(s) con su cobro o su pago.' : 'No hay nada que se pueda conciliar solo: revisa los que quedan uno por uno.');
     await refrescarCuentas();
   };
 
-  // lista de movimientos, primero lo que falta por conciliar
+  // lista: primero lo que falta por conciliar, despues lo ultimo conciliado
   const lista = document.getElementById('bcLista');
-  const orden = sinConciliar.concat(movimientosCache.filter(m=>m.conciliado).slice(0, 10));
-  lista.innerHTML = orden.length
-    ? orden.map(m=>
-        '<div class="comp-item" style="align-items:flex-start;">'
-        + '<span class="t">' + esc(m.fecha) + ' · ' + esc(m.descripcion||'')
-          + (m.conciliado ? ' <span style="color:var(--green);">✓ conciliado</span>' : '') + '</span>'
-        + '<span style="color:' + (Number(m.monto) > 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmtMoney(m.monto) + '</span>'
-        + (m.conciliado ? '' : '<button class="accionBtn" data-conciliar="'+m.id+'" title="Buscar con qué cuadra">🔎</button>')
-        + '</div>'
-        + '<div id="sug-'+m.id+'" style="padding-left:10px;"></div>'
-      ).join('')
+  const fila = m=>{
+    const ingreso = Number(m.monto) > 0;
+    const etiqueta = m.conciliado
+      ? ' <span style="color:var(--green);">✓ ' + (m.pago_id ? 'cobro' : m.egreso_id ? 'pago' : escHtml(m.nota || 'revisado')) + '</span>'
+      : ' <span style="color:var(--amber);">' + (ingreso ? 'ingreso sin identificar' : 'salida sin anotar') + '</span>';
+    return '<div class="comp-item" style="align-items:flex-start;">'
+      + '<span class="t" style="font-size:12px;">' + fechaCorta(m.fecha) + ' · ' + escHtml(m.descripcion || '') + (m.referencia ? ' · ref. ' + escHtml(m.referencia) : '') + etiqueta + '</span>'
+      + '<span style="white-space:nowrap;color:' + (ingreso ? 'var(--green)' : 'var(--red)') + ';">' + fmtCuenta(m.monto, c) + '</span></div>'
+      + (m.conciliado ? '' : '<div style="display:flex;gap:4px;flex-wrap:wrap;margin:-2px 0 6px 10px;">'
+          + '<button class="chip" data-mov-buscar="' + m.id + '" style="background:var(--panel2);">🔎 Buscar</button>'
+          + (ingreso ? '<button class="chip" data-mov-cobro="' + m.id + '" style="background:var(--panel2);">💵 Es un cobro</button>' : '')
+          + '<button class="chip" data-mov-otro="' + m.id + '" style="background:var(--panel2);">' + (ingreso ? '➕ Otro ingreso' : '🏷️ Comisión u otro') + '</button>'
+          + '</div>')
+      + '<div id="mov-' + m.id + '" style="padding-left:10px;"></div>';
+  };
+  lista.innerHTML = movimientosCache.length
+    ? (sinConciliar.length ? '<h4 style="margin:6px 0;font-size:12px;color:var(--sub);">Por conciliar</h4>' + sinConciliar.map(fila).join('') : '')
+      + (movimientosCache.some(m=>m.conciliado) ? '<h4 style="margin:12px 0 6px;font-size:12px;color:var(--sub);">Últimos conciliados</h4>'
+          + movimientosCache.filter(m=>m.conciliado).map(fila).join('') : '')
     : '<div class="empty">No hay movimientos cargados en esta cuenta.</div>';
 
-  lista.querySelectorAll('[data-conciliar]').forEach(b=>{
-    b.onclick = async ()=>{
-      const id = b.dataset.conciliar;
-      const mov = movimientosCache.find(x=>x.id===id);
-      const caja = document.getElementById('sug-'+id);
-      caja.innerHTML = '<div class="assumption">Buscando…</div>';
-      const sugs = await sugerenciasPara(mov);
-      if(!sugs.length){
-        caja.innerHTML = '<div class="assumption">Nada en el sistema cuadra con este movimiento. '
-          + (Number(mov.monto) > 0
-              ? 'Si es el pago de un vecino, regístralo arriba y vuelve a intentarlo.'
-              : 'Si es un gasto del condominio, cárgalo en los gastos del mes.') + '</div>';
-        return;
-      }
-      caja.innerHTML = sugs.map(sg=>
-        '<div class="comp-item"><span class="t">' + escHtml(sg.texto) + '</span>'
-        + '<button class="chip" data-cuadra="'+sg.id+'" data-tipo="'+sg.tipo+'" data-mov="'+id+'" '
-        + 'style="background:var(--green);color:#fff;flex:0 0 auto;">Es este</button></div>').join('');
-      caja.querySelectorAll('[data-cuadra]').forEach(bt=>{
-        bt.onclick = async ()=>{
-          const campos = {conciliado: true, conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()};
-          campos[bt.dataset.tipo === 'pago' ? 'pago_id' : 'gasto_id'] = bt.dataset.cuadra;
-          const { error } = await db.from('movimientos_banco').update(campos).eq('id', bt.dataset.mov);
-          if(error){ alert('No se pudo conciliar: ' + error.message); return; }
-          await refrescarCuentas();
-        };
-      });
+  const conciliar = async (movId, campos)=>{
+    Object.assign(campos, {conciliado: true, conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()});
+    const { error } = await db.from('movimientos_banco').update(campos).eq('id', movId);
+    if(error){ alert('No se pudo conciliar: ' + error.message); return false; }
+    await refrescarCuentas();
+    return true;
+  };
+
+  lista.querySelectorAll('[data-mov-buscar]').forEach(b=>{ b.onclick = async ()=>{
+    const mov = movimientosCache.find(x=>x.id === b.dataset.movBuscar);
+    const caja = document.getElementById('mov-' + mov.id);
+    caja.innerHTML = '<div class="assumption">Buscando…</div>';
+    const sugs = await sugerenciasPara(mov);
+    if(!sugs.length){
+      caja.innerHTML = '<div class="assumption">Nada en el sistema cuadra con este movimiento. '
+        + (Number(mov.monto) > 0 ? 'Si es el pago de un vecino, usa “💵 Es un cobro”.' : 'Si es un pago del condominio, regístralo en Pagos y vuelve a intentarlo.') + '</div>';
+      return;
+    }
+    caja.innerHTML = sugs.map(sg=>'<div class="comp-item"><span class="t">' + escHtml(sg.texto) + '</span>'
+      + '<button class="chip" data-cuadra="' + sg.id + '" data-tipo="' + sg.tipo + '" style="background:var(--green);color:#fff;flex:0 0 auto;">Es este</button></div>').join('');
+    caja.querySelectorAll('[data-cuadra]').forEach(bt=>{ bt.onclick = ()=>conciliar(mov.id, {[bt.dataset.tipo === 'pago' ? 'pago_id' : 'egreso_id']: bt.dataset.cuadra}); });
+  }; });
+
+  lista.querySelectorAll('[data-mov-otro]').forEach(b=>{ b.onclick = ()=>{
+    const mov = movimientosCache.find(x=>x.id === b.dataset.movOtro);
+    const nota = prompt(Number(mov.monto) > 0
+        ? '¿Qué es este ingreso? (no es el pago de un vecino)\nEj.: alquiler de MDS Telecom, intereses del banco'
+        : '¿Qué es esta salida?\nEj.: comisión bancaria, Corpoelec (se anota en Pagos aparte)',
+      Number(mov.monto) > 0 ? '' : (/comisi/i.test(mov.descripcion + ' ' + (mov.operacion || '')) ? 'Comisión bancaria' : ''));
+    if(nota === null || !nota.trim()) return;
+    conciliar(mov.id, {nota: nota.trim()});
+  }; });
+
+  // un ingreso que nadie reporto: se registra el cobro desde aqui y queda conciliado
+  lista.querySelectorAll('[data-mov-cobro]').forEach(b=>{ b.onclick = async ()=>{
+    const mov = movimientosCache.find(x=>x.id === b.dataset.movCobro);
+    const caja = document.getElementById('mov-' + mov.id);
+    if(caja.dataset.abierto){ caja.innerHTML = ''; delete caja.dataset.abierto; return; }
+    caja.dataset.abierto = '1';
+    const enBs = c.moneda === 'VES';
+    caja.innerHTML = '<div style="border:1px solid var(--border);border-radius:8px;padding:4px 10px 8px;margin:4px 0 10px;">'
+      + '<div class="form-row"><label>Apartamento</label><select data-c="apto"><option value="">— ¿De quién es? —</option>'
+        + apartments.slice().sort((a,z)=>a.id.localeCompare(z.id)).map(a=>'<option value="' + esc(a.id) + '">' + esc(a.id) + ' · ' + esc(a.propietario||'') + '</option>').join('') + '</select></div>'
+      + (enBs ? '<div class="form-row"><label>Tasa BCV</label><input type="number" step="0.0001" data-c="tasa"></div>' : '')
+      + '<div class="assumption" data-c="calc">' + (enBs ? 'Buscando la tasa del ' + fechaCorta(mov.fecha) + '…' : 'Se registra por ' + fmtMoney(mov.monto) + '.') + '</div>'
+      + '<button class="chip" data-c-ok style="background:var(--green);color:#fff;width:100%;margin-top:4px;">💵 Registrar el cobro y conciliarlo</button></div>';
+    const v = k=>caja.querySelector('[data-c="' + k + '"]');
+    const calcular = ()=>{
+      if(!enBs) return Number(mov.monto);
+      const t = parseFloat(v('tasa').value);
+      const usd = t > 0 ? redondear2(Number(mov.monto) / t) : 0;
+      v('calc').textContent = t > 0 ? fmtBs(mov.monto) + ' ÷ ' + t + ' = ' + fmtMoney(usd) : 'Falta la tasa.';
+      return usd;
     };
-  });
+    if(enBs){
+      const t = await tasaDelDia(mov.fecha);
+      if(t) v('tasa').value = t.tasa;
+      v('tasa').oninput = calcular;
+      calcular();
+      if(!t) v('calc').textContent = 'No se pudo consultar la tasa: escríbela.';
+    }
+    caja.querySelector('[data-c-ok]').onclick = async e=>{
+      const apto = v('apto').value;
+      if(!apto){ alert('Elige el apartamento.'); return; }
+      const usd = calcular();
+      if(!(usd > 0)){ alert('Falta la tasa BCV.'); return; }
+      e.target.disabled = true;
+      if(!await validarPagoCondominio(apto, usd, mov.fecha, mov.referencia || '')){ e.target.disabled = false; return; }
+      const { data, error } = await db.from('pagos').insert({
+        apartamento_id: apto, fecha: mov.fecha, monto: usd,
+        monto_bs: enBs ? Number(mov.monto) : null, tasa_bcv: enBs ? parseFloat(v('tasa').value) : null,
+        forma_pago: enBs ? 'Transferencia Bs' : 'Depósito en cuenta $',
+        referencia: mov.referencia || null,
+        nota: (enBs ? 'Pagó ' + fmtBs(mov.monto) + ' a tasa BCV ' + v('tasa').value + ' · ' : '') + 'Tomado del estado de cuenta del banco',
+        origen: 'tesoreria', estado: 'confirmado',
+        registrado_por: miPerfil.id, confirmado_por: miPerfil.id, confirmado_en: new Date().toISOString()
+      }).select('id').single();
+      if(error){ e.target.disabled = false; alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
+      await conciliar(mov.id, {pago_id: data.id});
+      await recargarDeuda();
+    };
+  }; });
 }
 
 // ---------- Nomina de los empleados del conjunto ----------
@@ -3824,7 +4070,7 @@ function renderCuentasCompleto(body){
   const selMes = document.getElementById('cuMes');
   if(selMes) selMes.onchange = async ()=>{ mesActual = selMes.value; await refrescarCuentas(); };
 
-  if(!per){ renderNominaSeccion(body); renderPresupuestoSeccion(body); return; }
+  if(!per){ renderNominaSeccion(body); renderPresupuestoSeccion(body); renderBancoSeccion(body); return; }
 
   const cerrado = per.estado === 'cerrado';
   const emitido = per.estado !== 'abierto';
@@ -4047,16 +4293,20 @@ function renderCuentasCompleto(body){
     '<h3 class="section tituloCuenta" style="--c:#4f8f6a;"><span class="tcIcono">💵</span>Registrar un cobro (pago de un vecino)</h3>'
     + '<div class="form-row"><label>Apartamento</label><select id="pApt">'+opcionesApt+'</select></div>'
     + '<div class="form-row"><label>Fecha</label><input type="date" id="pFecha" value="'+new Date().toISOString().slice(0,10)+'"></div>'
-    + '<div class="form-row"><label>Monto</label><input type="number" id="pMonto" step="0.01" min="0.01" placeholder="0.00"></div>'
     + '<div class="form-row"><label>Forma</label><select id="pForma">'
       + FORMAS_COBRO.map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
+    + htmlCobroBs('pc')
+    + '<div class="form-row"><label>Monto $</label><input type="number" id="pMonto" step="0.01" min="0.01" placeholder="0.00"></div>'
     + '<div class="form-row"><label>Referencia</label><input type="text" id="pRef" placeholder="N.º de la transferencia"></div>'
     + '<button class="chip" id="pRegistrar" style="background:var(--green);color:#fff;width:100%;margin-top:8px;">💵 Registrar cobro</button>'
     + '<div class="assumption">El pago se aplica solo al recibo más viejo que tenga pendiente. Si sobra, queda a favor.</div>';
   body.appendChild(secP);
+  const datosBsCobro = conectarCobroBs({forma: 'pForma', fecha: 'pFecha', monto: 'pMonto', prefijo: 'pc'});
 
   document.getElementById('pRegistrar').onclick = async ()=>{
     if(!document.getElementById('pApt').value){ alert('Elige el apartamento.'); return; }
+    const bsDatos = datosBsCobro();
+    if(bsDatos.error){ alert(bsDatos.error); return; }
     const monto = parseFloat(document.getElementById('pMonto').value);
     if(!(monto > 0)){ alert('Escribe el monto del pago.'); return; }
     const btn = document.getElementById('pRegistrar');
@@ -4069,6 +4319,8 @@ function renderCuentasCompleto(body){
       apartamento_id: document.getElementById('pApt').value,
       fecha: document.getElementById('pFecha').value || null,
       monto: monto,
+      monto_bs: bsDatos.monto_bs, tasa_bcv: bsDatos.tasa_bcv,
+      nota: bsDatos.monto_bs ? 'Pagó ' + fmtBs(bsDatos.monto_bs) + ' a tasa BCV ' + bsDatos.tasa_bcv : null,
       forma_pago: document.getElementById('pForma').value,
       referencia: document.getElementById('pRef').value.trim() || null,
       origen: 'tesoreria',
@@ -4080,6 +4332,7 @@ function renderCuentasCompleto(body){
     btn.disabled = false;
     if(error){ alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
     document.getElementById('pMonto').value = '';
+    document.getElementById('pcBs').value = '';
     document.getElementById('pRef').value = '';
     await refrescarCuentas();
     await recargarDeuda();
@@ -4179,7 +4432,8 @@ function renderReportadosSeccion(body){
             const apt = apartments.find(a=>a.id===p.apartamento_id) || {};
             return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:6px;">'
               + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id) + '</b> · ' + escHtml(apt.propietario||'') + '</span>'
-              + '<b style="color:var(--amber);">' + fmtMoney(Number(p.monto)) + '</b></div>'
+              + '<b style="color:var(--amber);">' + fmtMoney(Number(p.monto))
+                + (p.monto_bs ? ' <span style="font-weight:500;font-size:11px;color:var(--sub);">' + fmtBs(p.monto_bs) + ' · tasa ' + p.tasa_bcv + '</span>' : '') + '</b></div>'
               + '<div style="font-size:12px;color:var(--sub);">' + escHtml(p.fecha) + ' · ' + escHtml(p.forma_pago||'')
               + (p.banco ? ' · ' + escHtml(p.banco) : '') + (p.referencia ? ' · Ref. <b>' + escHtml(p.referencia) + '</b>' : '')
               + (p.nota ? '<br>“' + escHtml(p.nota) + '”' : '') + '</div>'
@@ -4211,21 +4465,45 @@ function renderReportadosSeccion(body){
     const formas = FORMAS_COBRO.slice();
     if(p.forma_pago && !formas.includes(p.forma_pago)) formas.unshift(p.forma_pago);
     host.innerHTML = '<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px;">'
-      + '<div class="form-row"><label>Monto $</label><input type="number" step="0.01" min="0.01" data-c="monto" value="' + Number(p.monto).toFixed(2) + '"></div>'
       + '<div class="form-row"><label>Fecha</label><input type="date" data-c="fecha" value="' + escHtml(p.fecha) + '"></div>'
+      + '<div class="form-row"><label>Monto en Bs</label><input type="number" step="0.01" min="0" data-c="monto_bs" value="' + (p.monto_bs ? Number(p.monto_bs).toFixed(2) : '') + '" placeholder="Vacío si pagó en $"></div>'
+      + '<div class="form-row"><label>Tasa BCV</label><input type="number" step="0.0001" min="0" data-c="tasa_bcv" value="' + (p.tasa_bcv || '') + '"></div>'
+      + '<div class="assumption" data-c-tasa-nota style="margin-top:0;"></div>'
+      + '<div class="form-row"><label>Monto $</label><input type="number" step="0.01" min="0.01" data-c="monto" value="' + Number(p.monto).toFixed(2) + '"></div>'
       + '<div class="form-row"><label>Forma</label><select data-c="forma_pago">' + formas.map(f=>'<option' + (f===p.forma_pago ? ' selected' : '') + '>' + escHtml(f) + '</option>').join('') + '</select></div>'
       + '<div class="form-row"><label>Banco</label><input type="text" data-c="banco" value="' + escHtml(p.banco||'') + '"></div>'
       + '<div class="form-row"><label>Referencia</label><input type="text" data-c="referencia" value="' + escHtml(p.referencia||'') + '"></div>'
       + '<div class="form-row"><label>Nota</label><input type="text" data-c="nota" value="' + escHtml(p.nota||'') + '"></div>'
       + '<button class="chip" data-c-guardar style="background:var(--accent);color:#fff;width:100%;margin-top:4px;">💾 Guardar corrección</button>'
       + '<div class="assumption">Solo corrige los datos; el pago sigue esperando que lo confirmes.</div></div>';
+    // con Bs y tasa, los $ salen de ahi; la tasa es la del dia del pago
+    const campo = c=>host.querySelector('[data-c="' + c + '"]');
+    const recalcular = ()=>{
+      const b = parseFloat(campo('monto_bs').value), t = parseFloat(campo('tasa_bcv').value);
+      if(b > 0 && t > 0) campo('monto').value = (Math.round(b / t * 100) / 100).toFixed(2);
+    };
+    const ponerTasa = async ()=>{
+      const t = await tasaDelDia(campo('fecha').value);
+      const nota = host.querySelector('[data-c-tasa-nota]');
+      if(!t){ nota.textContent = 'No se pudo consultar la tasa BCV.'; return; }
+      nota.textContent = 'Tasa BCV del ' + fechaCorta(t.fecha) + ': ' + t.tasa
+        + (Math.abs(Number(campo('tasa_bcv').value) - t.tasa) > 0.00005 && campo('tasa_bcv').value ? ' (el vecino usó ' + campo('tasa_bcv').value + ')' : '') + '.';
+      if(parseFloat(campo('monto_bs').value) > 0){ campo('tasa_bcv').value = t.tasa; recalcular(); }
+    };
+    campo('monto_bs').oninput = recalcular;
+    campo('tasa_bcv').oninput = recalcular;
+    campo('fecha').onchange = ponerTasa;
+    ponerTasa();
     host.querySelector('[data-c-guardar]').onclick = async e=>{
       const v = c=>host.querySelector('[data-c="' + c + '"]').value.trim();
       const monto = parseFloat(v('monto'));
       if(!(monto > 0)){ alert('El monto debe ser mayor que cero.'); return; }
+      const montoBs = parseFloat(v('monto_bs')) || null, tasaBs = parseFloat(v('tasa_bcv')) || null;
+      if(montoBs && !tasaBs){ alert('Falta la tasa BCV.'); return; }
       e.target.disabled = true;
       const { error } = await db.from('pagos').update({
-        monto, fecha: v('fecha') || p.fecha, forma_pago: v('forma_pago'),
+        monto, monto_bs: montoBs, tasa_bcv: montoBs ? tasaBs : null,
+        fecha: v('fecha') || p.fecha, forma_pago: v('forma_pago'),
         banco: v('banco') || null, referencia: v('referencia') || null, nota: v('nota') || null
       }).eq('id', p.id).eq('estado', 'reportado');
       if(error){ e.target.disabled = false; alert('No se pudo guardar: ' + error.message); return; }
@@ -5988,17 +6266,28 @@ function renderFichaPago(pane){
     + (d ? '<div class="assumption">Debe ' + fmtMoney(d.monto) + ' al condominio. '
          + '<a href="#" id="fpTodo" style="color:var(--accent);font-weight:700;">Pagar todo</a></div>' : '')
     + '<div class="form-row"><label>Fecha</label><input type="date" id="fpFecha" value="'+new Date().toISOString().slice(0,10)+'"></div>'
-    + '<div class="form-row"><label>Monto</label><input type="number" id="fpMonto" step="0.01" min="0.01" placeholder="0.00"></div>'
     + '<div class="form-row"><label>Forma</label><select id="fpForma">'
       + FORMAS_COBRO.map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
+    + htmlCobroBs('fpc')
+    + '<div class="form-row"><label>Monto $</label><input type="number" id="fpMonto" step="0.01" min="0.01" placeholder="0.00"></div>'
     + '<div class="form-row"><label>Referencia</label><input type="text" id="fpRef" placeholder="N.º de la transferencia"></div>'
     + '<button class="btn primary" id="fpRegistrar" style="background:var(--green);width:100%;margin-top:10px;">💵 Registrar pago</button>'
     + '<div class="assumption" style="margin-top:10px;">El pago se aplica al recibo más viejo que tenga pendiente. Si sobra, queda a favor.'
       + (pd.length ? ' Los abonos a proyectos (' + pd.map(p=>esc(p.nombre)).join(', ') + ') se registran en la pestaña Proyectos.' : '')
     + '</div>';
+  const datosBsFicha = conectarCobroBs({forma: 'fpForma', fecha: 'fpFecha', monto: 'fpMonto', prefijo: 'fpc'});
   const todo = document.getElementById('fpTodo');
-  if(todo) todo.onclick = (e)=>{ e.preventDefault(); document.getElementById('fpMonto').value = d.monto; };
+  if(todo) todo.onclick = (e)=>{
+    e.preventDefault();
+    const t = parseFloat(document.getElementById('fpcTasa').value);
+    if(document.getElementById('fpcFilaBs').style.display !== 'none' && t > 0){
+      document.getElementById('fpcBs').value = (Math.round(d.monto * t * 100) / 100).toFixed(2);
+      document.getElementById('fpcBs').dispatchEvent(new Event('input'));
+    } else document.getElementById('fpMonto').value = d.monto;
+  };
   document.getElementById('fpRegistrar').onclick = async ()=>{
+    const bsDatos = datosBsFicha();
+    if(bsDatos.error){ alert(bsDatos.error); return; }
     const monto = parseFloat(document.getElementById('fpMonto').value);
     if(!(monto > 0)){ alert('Escribe el monto del pago.'); return; }
     const btn = document.getElementById('fpRegistrar');
@@ -6011,6 +6300,8 @@ function renderFichaPago(pane){
       apartamento_id: apt.id,
       fecha: document.getElementById('fpFecha').value || null,
       monto: monto,
+      monto_bs: bsDatos.monto_bs, tasa_bcv: bsDatos.tasa_bcv,
+      nota: bsDatos.monto_bs ? 'Pagó ' + fmtBs(bsDatos.monto_bs) + ' a tasa BCV ' + bsDatos.tasa_bcv : null,
       forma_pago: document.getElementById('fpForma').value,
       referencia: document.getElementById('fpRef').value.trim() || null,
       origen: 'tesoreria',

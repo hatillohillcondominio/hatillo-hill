@@ -153,6 +153,23 @@ async function cargarTasa(){
   }catch(e){ tasa = null; }
 }
 const enBs = n=>tasa ? Math.round(Number(n) * tasa.valor * 100) / 100 : null;
+// Un pago en bolivares vale a la tasa BCV del dia en que se hizo (o la ultima
+// publicada antes, si ese dia no hubo). Historico oficial de ve.dolarapi.com.
+let tasasHist = null;
+async function tasaDelDia(fecha){
+  if(!tasasHist || !tasasHist.length){
+    try{
+      const j = await (await fetch('https://ve.dolarapi.com/v1/historicos/dolares/oficial')).json();
+      tasasHist = (Array.isArray(j) ? j : []).filter(x=>x && x.fecha && Number(x.promedio) > 0)
+        .map(x=>({fecha: String(x.fecha).slice(0,10), valor: Number(x.promedio)}))
+        .sort((a,b)=>a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+    }catch(e){ tasasHist = []; }
+  }
+  let t = null;
+  for(const x of tasasHist){ if(x.fecha <= fecha) t = x; else break; }
+  if(!t && fecha === hoy() && tasa) t = {fecha, valor: tasa.valor};
+  return t;
+}
 function mesLegible(id){
   if(!id) return '';
   const [a, m] = id.split('-');
@@ -435,7 +452,7 @@ function formularioPago(){
     + '<label for="pForma">Forma de pago</label><select id="pForma">' + FORMAS_PAGO.map(f=>'<option>' + f + '</option>').join('') + '</select>'
     + (tasa ? '<div id="pFilaBs"><label for="pBs">Monto pagado en bolívares</label><input id="pBs" type="number" inputmode="decimal" step="0.01" min="0.01"'
         + (sugerido > 0.005 ? ' value="' + enBs(sugerido).toFixed(2) + '"' : '') + '>'
-        + '<div class="nota" style="margin-top:4px;">A la tasa BCV de ' + f2(tasa.valor) + ' Bs por $.</div></div>' : '')
+        + '<div class="nota" style="margin-top:4px;" id="pTasaNota">A la tasa BCV de ' + f2(tasa.valor) + ' Bs por $.</div></div>' : '')
     + '<label for="pMonto">Equivale en dólares</label><input id="pMonto" type="number" inputmode="decimal" step="0.01" min="0.01" required'
       + (sugerido > 0.005 ? ' value="' + sugerido.toFixed(2) + '"' : '') + '>'
     + '<label for="pFecha">Fecha del pago</label><input id="pFecha" type="date" max="' + hoy() + '" value="' + hoy() + '" required>'
@@ -449,9 +466,23 @@ function formularioPago(){
   // bolivares y dolares se calculan entre si con la tasa BCV
   const iBs = document.getElementById('pBs'), iUsd = document.getElementById('pMonto'), selForma = document.getElementById('pForma');
   const enDivisa = ()=>selForma.value.includes('$');
+  // la tasa es la del dia del pago: cambia con la fecha
+  let tasaPago = tasa ? tasa.valor : null;
+  const pFecha = document.getElementById('pFecha');
   if(iBs){
-    iBs.oninput = ()=>{ const v = parseFloat(iBs.value); iUsd.value = v > 0 ? (Math.round(v / tasa.valor * 100) / 100).toFixed(2) : ''; };
-    iUsd.addEventListener('input', ()=>{ const v = parseFloat(iUsd.value); if(!enDivisa()) iBs.value = v > 0 ? enBs(v).toFixed(2) : ''; });
+    const aUsd = ()=>{ const v = parseFloat(iBs.value); iUsd.value = v > 0 && tasaPago ? (Math.round(v / tasaPago * 100) / 100).toFixed(2) : ''; };
+    iBs.oninput = aUsd;
+    iUsd.addEventListener('input', ()=>{ const v = parseFloat(iUsd.value); if(!enDivisa()) iBs.value = v > 0 && tasaPago ? (Math.round(v * tasaPago * 100) / 100).toFixed(2) : ''; });
+    pFecha.addEventListener('change', async ()=>{
+      const nota = document.getElementById('pTasaNota');
+      nota.textContent = 'Buscando la tasa BCV de ese día…';
+      const t = await tasaDelDia(pFecha.value);
+      if(t){
+        tasaPago = t.valor;
+        nota.textContent = 'A la tasa BCV del ' + fecha(t.fecha) + ': ' + f2(t.valor) + ' Bs por $.';
+      } else nota.textContent = 'No se pudo consultar la tasa de ese día; se usa la de hoy (' + f2(tasaPago) + ').';
+      aUsd();
+    });
     selForma.onchange = ()=>{
       document.getElementById('pFilaBs').style.display = enDivisa() ? 'none' : '';
       document.querySelector('label[for="pMonto"]').textContent = enDivisa() ? 'Monto en dólares' : 'Equivale en dólares';
@@ -466,6 +497,11 @@ function formularioPago(){
     const forma = document.getElementById('pForma').value;
     const ref = document.getElementById('pRef').value.trim();
     if(!(monto > 0)){ err.textContent = 'Escribe el monto.'; return; }
+    const enBsPago = iBs && !enDivisa() && parseFloat(iBs.value) > 0;
+    const montoBs = enBsPago ? Math.round(parseFloat(iBs.value) * 100) / 100 : null;
+    if(enBsPago && Math.abs(monto - montoBs / tasaPago) > 0.05){ err.textContent = 'Los dólares no corresponden a los bolívares: vuelve a escribir el monto en Bs.'; return; }
+    const tope = Math.max(datos.saldo, 0) * 3 + 500;
+    if(monto > tope && !confirm('Vas a reportar ' + usd(monto) + ' y tu deuda es de ' + usd(Math.max(datos.saldo, 0)) + '.\n\n¿Seguro que el monto en dólares está bien? (Si pagaste en bolívares, escríbelos en el campo de bolívares.)')) return;
     if(forma !== 'Efectivo' && !ref){ err.textContent = 'Escribe el número de referencia para que la tesorería lo encuentre.'; return; }
     const dup = datos.pagos.find(p=>p.referencia && ref && p.referencia === ref && p.estado !== 'rechazado');
     if(dup && !confirm('Ya hay un pago con la referencia ' + ref + '. ¿Reportarlo de todos modos?')) return;
@@ -474,11 +510,13 @@ function formularioPago(){
       apartamento_id: perfil.apartamento_id,
       fecha: document.getElementById('pFecha').value,
       monto,
+      monto_bs: montoBs,
+      tasa_bcv: enBsPago ? tasaPago : null,
       forma_pago: forma,
       banco: document.getElementById('pBanco').value.trim() || null,
       referencia: ref || null,
       nota: [
-        iBs && !enDivisa() && parseFloat(iBs.value) > 0 ? 'Pagó ' + bs(parseFloat(iBs.value)) + ' a tasa BCV ' + f2(tasa.valor) : '',
+        enBsPago ? 'Pagó ' + bs(montoBs) + ' a tasa BCV ' + f2(tasaPago) : '',
         document.getElementById('pNota').value.trim()
       ].filter(Boolean).join(' · ') || null,
       origen: 'portal',
