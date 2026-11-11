@@ -4368,14 +4368,18 @@ function renderCuentasCompleto(body){
         '<div class="comp-item"><span class="t">' + esc(g.fecha) + ' · ' + esc(g.descripcion)
         + (g.categorias_gasto ? ' <span style="color:var(--dim);">(' + esc(g.categorias_gasto.nombre) + ')</span>' : '')
         + (g.prorrateable ? '' : ' <span style="color:var(--amber);">no se reparte</span>')
+        + (g.origen === 'nomina' ? '' : tieneSoporte(g)
+            ? ' <span style="color:var(--green);" title="' + escHtml((g.documento ? 'Factura ' + g.documento : '') + (g.comprobante_url ? ' · con archivo' : '')) + '">🧾' + (g.comprobante_url ? '📎' : '') + '</span>'
+            : ' <span style="color:var(--amber);">⚠️ sin soporte</span>')
         + (egresosListos && g.origen !== 'nomina' && Number(g.monto) > 0
             ? (pagadoDeGasto(g.id) >= Number(g.monto) - 0.005
                 ? ' <span style="color:var(--green);">✓ pagado</span>'
                 : ' <span style="color:#d35400;">' + (pagadoDeGasto(g.id) > 0 ? 'abonado ' + fmtMoney(pagadoDeGasto(g.id)) : 'por pagar') + '</span>')
             : '')
-        + '</span><span>' + fmtMoney(g.monto)
+        + '</span><span style="white-space:nowrap;">' + fmtMoney(g.monto)
+        + (g.origen === 'nomina' ? '' : ' <button class="accionBtn" data-soporte-gasto="'+g.id+'" title="Factura, proveedor y archivo de soporte">🧾</button>')
         + (emitido ? '' : ' <button class="accionBtn" data-borrar-gasto="'+g.id+'" title="Eliminar">✕</button>')
-        + '</span></div>'
+        + '</span></div><div data-soporte-host="'+g.id+'"></div>'
       ).join('')
       + '<div class="comp-item" style="font-weight:700;border-top:1px solid var(--border);">'
         + '<span class="t">Total del mes</span><span>' + fmtMoney(totalGastos) + '</span></div>'
@@ -4430,6 +4434,22 @@ function renderCuentasCompleto(body){
   if(chkPag) chkPag.onchange = ()=>{ document.getElementById('gPagoDatos').style.display = chkPag.checked ? '' : 'none'; tasaGasto(); };
   if(chkPag) document.getElementById('gFecha').addEventListener('change', tasaGasto);
 
+  lista.querySelectorAll('[data-soporte-gasto]').forEach(b=>{
+    b.onclick = async ()=>{
+      const host = lista.querySelector('[data-soporte-host="' + b.dataset.soporteGasto + '"]');
+      if(host.innerHTML){ host.innerHTML = ''; return; }
+      const g = gastosCache.find(x=>x.id === b.dataset.soporteGasto);
+      await abrirSoporteGasto(g, host, !emitido && !!per && per.estado === 'abierto', refrescarCuentas);
+      if(!puedeDinero()) soloLectura(host);
+    };
+  });
+  if(gastosCache.some(g=>g.origen !== 'nomina' && !tieneSoporte(g))){
+    const n = gastosCache.filter(g=>g.origen !== 'nomina' && !tieneSoporte(g)).length;
+    const av = document.createElement('div');
+    av.className = 'assumption';
+    av.innerHTML = '⚠️ ' + n + ' gasto(s) sin factura ni recibo. Toca 🧾 en cada uno para anotar el número y adjuntar la foto o el PDF.';
+    lista.appendChild(av);
+  }
   lista.querySelectorAll('[data-borrar-gasto]').forEach(b=>{
     b.onclick = async ()=>{
       if(!confirm('¿Eliminar este gasto?')) return;
@@ -5620,6 +5640,74 @@ const UNIDADES = ['unidad', 'par', 'juego', 'caja', 'paquete', 'bolsa', 'saco', 
   'cuñete', 'tambor', 'metro', 'm²', 'm³', 'pie', 'pulgada'];
 
 // buscar o crear la ficha de un proveedor por su nombre (se usa al cargar un gasto)
+
+// ---------- Soporte de un gasto: factura o recibo adjunto (sql/28) ----------
+// La foto o el PDF va al bucket privado "comprobantes"; en el gasto queda la
+// ruta, el numero de factura y el proveedor (con su RIF o cedula en su ficha).
+const tieneSoporte = g=>!!(g.comprobante_url || (g.documento && String(g.documento).trim()));
+async function verComprobante(ruta){
+  const v = window.open('', '_blank');
+  const { data, error } = await db.storage.from('comprobantes').createSignedUrl(ruta, 300);
+  if(error || !data){ if(v) v.close(); alert('No se pudo abrir el archivo: ' + (error ? error.message : '')); return; }
+  if(v) v.location = data.signedUrl; else window.location.href = data.signedUrl;
+}
+async function abrirSoporteGasto(g, host, mesAbierto, alTerminar){
+  const prov = g.proveedor_id ? (await db.from('proveedores').select('id, nombre, rif').eq('id', g.proveedor_id).maybeSingle()).data : null;
+  host.innerHTML = '<div style="border:1px solid var(--border);border-radius:8px;padding:4px 10px 8px;margin:2px 0 10px;">'
+    + '<div class="form-row"><label>Descripción</label><input type="text" data-s="descripcion" value="' + escHtml(g.descripcion || '') + '"></div>'
+    + (mesAbierto ? '<div class="form-row"><label>Categoría</label><select data-s="categoria">'
+        + categoriasCache.map(c=>'<option value="' + c.id + '"' + (c.id === g.categoria_id ? ' selected' : '') + '>' + esc(c.nombre) + '</option>').join('') + '</select></div>' : '')
+    + '<div class="form-row two"><div><label>Proveedor</label><input type="text" data-s="proveedor" list="dlProveedores" value="' + escHtml(g.proveedor || (prov && prov.nombre) || '') + '" placeholder="Nombre de quien cobró"></div>'
+      + '<div><label>RIF o cédula</label><input type="text" data-s="rif" value="' + escHtml((prov && prov.rif) || '') + '" placeholder="J-12345678-9 o V-12345678"></div></div>'
+    + '<div class="form-row"><label>N.º de factura o recibo</label><input type="text" data-s="documento" value="' + escHtml(g.documento || '') + '" placeholder="Si no factura, “Recibo firmado”"></div>'
+    + '<div class="form-row"><label>Foto o PDF</label><input type="file" data-s="archivo" accept="image/*,application/pdf"></div>'
+    + (g.comprobante_url ? '<div class="assumption" style="margin-top:0;">📎 Ya tiene un archivo: <a href="#" data-s-ver style="color:var(--accent);font-weight:700;">verlo</a>'
+        + ' · <a href="#" data-s-quitar style="color:var(--red);">quitarlo</a>. Si eliges otro, lo reemplaza.</div>' : '')
+    + '<button class="chip" data-s-guardar style="background:var(--accent);color:#fff;width:100%;margin-top:4px;">💾 Guardar soporte</button>'
+    + '<div class="assumption">El monto' + (mesAbierto ? ' no se cambia aquí: si está mal, borra el gasto y cárgalo de nuevo.' : ', la categoría y si se reparte ya no se cambian: el mes no está abierto.') + '</div></div>';
+  if(typeof cargarNombresProveedores === 'function') cargarNombresProveedores();
+  const v = k=>host.querySelector('[data-s="' + k + '"]');
+  const ver = host.querySelector('[data-s-ver]');
+  if(ver) ver.onclick = e=>{ e.preventDefault(); verComprobante(g.comprobante_url); };
+  const quitar = host.querySelector('[data-s-quitar]');
+  if(quitar) quitar.onclick = async e=>{
+    e.preventDefault();
+    if(!confirm('¿Quitar el archivo de soporte de este gasto?')) return;
+    await db.storage.from('comprobantes').remove([g.comprobante_url]);
+    const { error } = await db.from('gastos').update({comprobante_url: null}).eq('id', g.id);
+    if(error){ alert('No se pudo quitar: ' + error.message); return; }
+    await alTerminar();
+  };
+  host.querySelector('[data-s-guardar]').onclick = async e=>{
+    const btn = e.target;
+    const desc = v('descripcion').value.trim();
+    if(!desc){ alert('El gasto necesita una descripción.'); return; }
+    btn.disabled = true; btn.textContent = 'Guardando…';
+    try{
+      const campos = {descripcion: desc, documento: v('documento').value.trim() || null};
+      if(v('categoria')) campos.categoria_id = v('categoria').value;
+      const nombreProv = v('proveedor').value.trim();
+      campos.proveedor = nombreProv || null;
+      campos.proveedor_id = nombreProv ? await fichaProveedor(nombreProv) : null;
+      const rif = v('rif').value.trim();
+      if(campos.proveedor_id && rif) await db.from('proveedores').update({rif}).eq('id', campos.proveedor_id);
+      const f = v('archivo').files[0];
+      if(f){
+        if(f.size > 10 * 1024 * 1024) throw new Error('El archivo pasa de 10 MB.');
+        const ext = (f.name.match(/\.([a-z0-9]{2,5})$/i) || [, f.type === 'application/pdf' ? 'pdf' : 'jpg'])[1].toLowerCase();
+        const ruta = 'gastos/' + g.periodo_id + '/' + g.id + '-' + Date.now() + '.' + ext;
+        const up = await db.storage.from('comprobantes').upload(ruta, f, {contentType: f.type || undefined, upsert: false});
+        if(up.error) throw new Error(up.error.message);
+        if(g.comprobante_url) await db.storage.from('comprobantes').remove([g.comprobante_url]);
+        campos.comprobante_url = ruta;
+      }
+      const { error } = await db.from('gastos').update(campos).eq('id', g.id);
+      if(error) throw new Error(error.message);
+      await alTerminar();
+    }catch(err){ btn.disabled = false; btn.textContent = '💾 Guardar soporte'; alert('No se pudo guardar: ' + (err.message || err)); }
+  };
+}
+
 async function fichaProveedor(nombre){
   nombre = (nombre || '').trim().replace(/\s+/g, ' ');
   if(!nombre) return null;
