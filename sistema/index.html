@@ -2678,13 +2678,14 @@ async function cargarNomina(){
   nominaPct = {};
   (pct.data || []).forEach(r=>{ nominaPct[r.clave.replace('nomina_', '')] = Number(r.valor) || 0; });
   nominaMes = null; nominaLineas = [];
-  if(!mesActual) return;
+  if(!mesActual){ await cargarPrestamos(); return; }
   const nom = await db.from('nominas').select('*').eq('periodo_id', mesActual).maybeSingle();
   nominaMes = nom.data || null;
   if(nominaMes){
     const lin = await db.from('nomina_lineas').select('*').eq('nomina_id', nominaMes.id).order('orden');
     nominaLineas = lin.data || [];
   }
+  await cargarPrestamos();
 }
 
 const montoLinea = l => Math.round((Number(l.cantidad)||0) * (Number(l.monto_unitario)||0) * 100) / 100;
@@ -2768,6 +2769,7 @@ async function prepararNominaDelMes(){
   await cargarNomina();
   for(const e of empleadosCache) await recalcularAportes(e.id);
   await cargarNomina();
+  await sincronizarPrestamosNomina();
 }
 
 // minimos de la LOTTT sobre el sueldo base: dias y salario diario
@@ -3118,6 +3120,236 @@ function renderNominaSeccion(body){
   if(!puedeDinero()) soloLectura(det);
 }
 
+
+// ---------- Préstamos a empleados (sql/26) ----------
+// La entrega sale del banco como egreso de tipo 'prestamo' (no es gasto del
+// condominio) y cada nómina lleva la cuota como deducción hasta saldarlo.
+let prestamosCache = [];   // filas de v_prestamos que no están anuladas
+
+async function cargarPrestamos(){
+  const { data, error } = await db.from('v_prestamos').select('*').eq('anulado', false).order('fecha');
+  prestamosCache = error ? [] : (data || []);
+}
+const pendientePrestamo = p=>Math.round((Number(p.saldo) - Number(p.en_nomina_abierta)) * 100) / 100;
+
+// pone en la nómina abierta la cuota de cada préstamo que todavía no la tenga
+async function sincronizarPrestamosNomina(){
+  if(!nominaMes || nominaMes.estado === 'cerrada') return 0;
+  await cargarPrestamos();
+  const filas = [];
+  prestamosCache.forEach(p=>{
+    if(!empleadosCache.some(e=>e.id === p.empleado_id)) return;
+    if(nominaLineas.some(l=>l.prestamo_id === p.id)) return;
+    const resta = pendientePrestamo(p);
+    if(resta <= 0.005) return;
+    const q = Number(p.quincena) || 0;
+    filas.push({nomina_id: nominaMes.id, empleado_id: p.empleado_id, orden: 650,
+      concepto: 'Cuota del préstamo del ' + fechaCorta(p.fecha) + ' (' + (Number(p.cuotas_descontadas) + 1) + ' de ' + p.cuotas + ')',
+      tipo: 'deduccion', cantidad: 1, monto_unitario: Math.min(Number(p.cuota), resta),
+      aplica: true, quincena: q, solo_segunda_quincena: q === 2, prestamo_id: p.id, nota: 'préstamo'});
+  });
+  if(filas.length){
+    const { error } = await db.from('nomina_lineas').insert(filas);
+    if(error) throw new Error(error.message);
+    await cargarNomina();
+    await cargarPrestamos();
+  }
+  return filas.length;
+}
+
+// bloque de préstamos dentro de la ficha del empleado
+function pintarPrestamosEmpleado(e, cont){
+  if(!cont) return;
+  const lista = prestamosCache.filter(p=>p.empleado_id === e.id);
+  const activos = lista.filter(p=>Number(p.saldo) > 0.005);
+  const deuda = activos.reduce((s,p)=>s + Number(p.saldo), 0);
+  cont.innerHTML = '<h4 style="margin:14px 0 6px;font-size:13px;">💸 Préstamos' + (deuda > 0.005 ? ' · debe ' + fmtMoney(deuda) : '') + '</h4>'
+    + (lista.length ? lista.map(p=>{
+        const saldado = Number(p.saldo) <= 0.005;
+        return '<div class="comp-item" style="align-items:flex-start;"><span class="t">' + fechaCorta(p.fecha) + ' · ' + fmtMoney(Number(p.monto))
+          + ' en ' + p.cuotas + ' cuota(s) de ' + fmtMoney(Number(p.cuota)) + ' (' + QUINCENAS[Number(p.quincena)||0].toLowerCase() + ')'
+          + '<br><span style="color:var(--sub);font-size:11px;">Descontado ' + fmtMoney(Number(p.descontado)) + ' en ' + p.cuotas_descontadas + ' nómina(s)'
+          + (Number(p.en_nomina_abierta) ? ' · ' + fmtMoney(Number(p.en_nomina_abierta)) + ' en la nómina abierta' : '')
+          + (p.entregado_el ? ' · entregado el ' + fechaCorta(p.entregado_el) : ' · entrega no registrada en Pagos')
+          + (p.nota ? ' · ' + escHtml(p.nota) : '') + '</span></span>'
+          + '<span style="text-align:right;white-space:nowrap;">' + (saldado ? '<b style="color:var(--green);">✓ pagado</b>' : 'debe <b>' + fmtMoney(Number(p.saldo)) + '</b>')
+          + (puedeDinero() && !saldado ? '<br><button class="chip" data-prest-cuota="' + p.id + '" style="background:var(--panel2);padding:2px 8px;margin-top:3px;">✏️ Cuota</button>' : '')
+          + (puedeDinero() && Number(p.cuotas_descontadas) === 0 ? '<button class="chip" data-prest-anular="' + p.id + '" style="background:var(--panel2);color:var(--red);padding:2px 8px;margin-top:3px;">✕</button>' : '')
+          + '</span></div>';
+      }).join('') : '<div class="assumption" style="margin-top:0;">No tiene préstamos registrados.</div>')
+    + (puedeDinero() ? '<details id="prestNuevo" style="margin-top:6px;"><summary style="cursor:pointer;font-size:12px;color:var(--accent);font-weight:700;padding:4px 0;">➕ Registrar un préstamo</summary>'
+      + '<div class="form-row two"><div><label>Monto ($)</label><input type="number" step="0.01" min="0.01" id="prMonto"></div>'
+        + '<div><label>Fecha</label><input type="date" id="prFecha" value="' + new Date().toISOString().slice(0,10) + '"></div></div>'
+      + '<div class="form-row two"><div><label>Cuotas</label><input type="number" step="1" min="1" max="36" id="prCuotas" value="1"></div>'
+        + '<div><label>Cuota ($)</label><input type="number" step="0.01" min="0.01" id="prCuota"></div></div>'
+      + '<div class="form-row"><label>Se descuenta</label><select id="prQuincena">' + opcionesQuincena(2) + '</select></div>'
+      + '<div class="form-row"><label>Nota</label><input type="text" id="prNota" placeholder="Opcional: para qué fue, quién lo autorizó"></div>'
+      + '<div class="form-row"><label>La entrega del dinero</label><select id="prEntrega">'
+        + '<option value="ahora">Registrarla ahora en Pagos</option><option value="antes">Ya se entregó antes (no registrar pago)</option></select></div>'
+      + '<div id="prPago">'
+        + '<div class="form-row"><label>Forma</label><select id="prForma">' + ['Transferencia','Pago móvil','Efectivo','Otro'].map(f=>'<option>' + f + '</option>').join('') + '</select></div>'
+        + '<div class="form-row two"><div><label>Tasa BCV</label><input type="number" step="0.0001" id="prTasa"></div>'
+          + '<div><label>Referencia</label><input type="text" id="prRef"></div></div>'
+        + '<div class="assumption" id="prTasaNota" style="margin-top:0;"></div></div>'
+      + '<button class="chip" id="prGuardar" style="background:#7a5aa6;color:#fff;width:100%;margin-top:6px;padding:10px;">💾 Registrar el préstamo</button>'
+      + '<div class="assumption">No es gasto del condominio: no entra al recibo de los vecinos. La cuota se descuenta sola en cada nómina hasta saldarlo.</div></details>' : '');
+
+  cont.querySelectorAll('[data-prest-anular]').forEach(b=>{ b.onclick = async ()=>{
+    const p = lista.find(x=>x.id === b.dataset.prestAnular);
+    if(!confirm('¿Anular el préstamo de ' + fmtMoney(Number(p.monto)) + ' del ' + fechaCorta(p.fecha) + '?\n\nSe quita su cuota de la nómina abierta y se anula el pago de la entrega, si se registró.')) return;
+    try{
+      if(nominaMes && nominaMes.estado !== 'cerrada'){
+        const r1 = await db.from('nomina_lineas').delete().eq('prestamo_id', p.id).eq('nomina_id', nominaMes.id);
+        if(r1.error) throw r1.error;
+      }
+      const r2 = await db.from('egresos').delete().eq('prestamo_id', p.id);
+      if(r2.error) throw r2.error;
+      const r3 = await db.from('prestamos_empleado').update({anulado: true}).eq('id', p.id);
+      if(r3.error) throw r3.error;
+      await cargarNomina(); await cargarPrestamos(); await cargarEgresos();
+      renderSidebar();
+    }catch(err){ alert('No se pudo anular: ' + (err.message || err)); }
+  }; });
+
+  cont.querySelectorAll('[data-prest-cuota]').forEach(b=>{ b.onclick = async ()=>{
+    const p = lista.find(x=>x.id === b.dataset.prestCuota);
+    const v = prompt('Nueva cuota para las próximas nóminas (debe ' + fmtMoney(Number(p.saldo)) + '):', Number(p.cuota).toFixed(2));
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(',', '.'));
+    if(!(n > 0)){ alert('La cuota debe ser mayor que cero.'); return; }
+    const { error } = await db.from('prestamos_empleado').update({cuota: Math.round(n * 100) / 100}).eq('id', p.id);
+    if(error){ alert('No se pudo cambiar: ' + error.message); return; }
+    // si la nómina abierta ya tiene la cuota, se ajusta también
+    const lin = nominaLineas.find(l=>l.prestamo_id === p.id);
+    if(lin && nominaMes && nominaMes.estado !== 'cerrada')
+      await db.from('nomina_lineas').update({monto_unitario: Math.min(Math.round(n * 100) / 100, Number(p.saldo))}).eq('id', lin.id);
+    await cargarNomina(); await cargarPrestamos();
+    renderSidebar();
+  }; });
+
+  const det = cont.querySelector('#prestNuevo');
+  if(!det) return;
+  const $ = id=>document.getElementById(id);
+  const cuotaSug = ()=>{ const m = parseFloat($('prMonto').value), c = parseInt($('prCuotas').value, 10) || 1; if(m > 0) $('prCuota').value = (Math.ceil(m / c * 100) / 100).toFixed(2); };
+  $('prMonto').oninput = cuotaSug; $('prCuotas').oninput = cuotaSug;
+  const ponerTasa = async ()=>{
+    const t = await tasaDelDia($('prFecha').value);
+    $('prTasaNota').textContent = t ? 'Tasa BCV del ' + fechaCorta(t.fecha) + '.' : 'No se pudo consultar la tasa: escríbela si se pagó en Bs.';
+    if(t) $('prTasa').value = t.tasa;
+  };
+  $('prFecha').onchange = ponerTasa;
+  $('prEntrega').onchange = ()=>{ $('prPago').style.display = $('prEntrega').value === 'ahora' ? '' : 'none'; };
+  det.addEventListener('toggle', ()=>{ if(det.open && !$('prTasa').value) ponerTasa(); });
+  $('prGuardar').onclick = async ev=>{
+    const monto = parseFloat($('prMonto').value), cuotas = parseInt($('prCuotas').value, 10) || 1, cuota = parseFloat($('prCuota').value);
+    if(!(monto > 0)){ alert('Escribe el monto del préstamo.'); return; }
+    if(!(cuota > 0)){ alert('Escribe la cuota.'); return; }
+    const ahora = $('prEntrega').value === 'ahora';
+    const tasa = parseFloat($('prTasa').value) || null;
+    const forma = $('prForma').value;
+    if(ahora && forma !== 'Efectivo' && !tasa){ alert('Falta la tasa BCV del día de la entrega.'); return; }
+    if(!confirm('Préstamo a ' + e.nombre + ' por ' + fmtMoney(monto) + ', en ' + cuotas + ' cuota(s) de ' + fmtMoney(cuota) + '.'
+      + (ahora ? '\nSe registra el pago de la entrega el ' + fechaCorta($('prFecha').value) + (tasa ? ' (Bs ' + (Math.round(monto * tasa * 100) / 100).toLocaleString('es-VE', {minimumFractionDigits:2}) + ')' : '') + '.' : '') + '\n\n¿Registrar?')) return;
+    ev.target.disabled = true;
+    try{
+      const { data: p, error } = await db.from('prestamos_empleado').insert({
+        empleado_id: e.id, fecha: $('prFecha').value, monto: Math.round(monto * 100) / 100, cuotas,
+        cuota: Math.round(cuota * 100) / 100, quincena: Number($('prQuincena').value) || 0,
+        nota: $('prNota').value.trim() || null
+      }).select('*').single();
+      if(error) throw error;
+      if(ahora){
+        const r = await db.from('egresos').insert({
+          fecha: $('prFecha').value, concepto: 'Préstamo a ' + e.nombre, tipo: 'prestamo', prestamo_id: p.id,
+          monto_usd: Math.round(monto * 100) / 100, tasa_bcv: tasa, monto_bs: tasa ? Math.round(monto * tasa * 100) / 100 : null,
+          forma_pago: forma, referencia: $('prRef').value.trim() || null
+        });
+        if(r.error) throw r.error;
+      }
+      await sincronizarPrestamosNomina();
+      await cargarPrestamos(); await cargarEgresos();
+      renderSidebar();
+    }catch(err){ ev.target.disabled = false; alert('No se pudo registrar el préstamo: ' + (err.message || err)); }
+  };
+}
+
+// ---------- Notas de la junta (sql/26) ----------
+// Anotaciones varias antes de hacer un proceso: lo que hay que revisar,
+// acuerdos, recordatorios. Las ven y escriben el admin, la junta y la tesorería.
+let notaEditando = null;
+function renderNotasSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#8a7a3b;"><span class="tcIcono">📝</span>Notas de la junta</h3>'
+    + '<div class="form-row"><label>Título</label><input type="text" id="ntTitulo" placeholder="Ej.: Revisar antes de emitir noviembre"></div>'
+    + '<div class="form-row"><label>Texto</label><textarea id="ntTexto" rows="3" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-size:13px;"></textarea></div>'
+    + '<div style="display:flex;gap:6px;"><label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--sub);"><input type="checkbox" id="ntFijar" style="width:auto;"> 📌 Fijar arriba</label>'
+      + '<button class="chip" id="ntGuardar" style="background:#8a7a3b;color:#fff;flex:1;padding:8px;">💾 Guardar nota</button></div>'
+    + '<div id="ntLista" style="margin-top:12px;"><div class="assumption">Cargando…</div></div>';
+  body.appendChild(sec);
+
+  const pintarLista = async ()=>{
+    const cont = sec.querySelector('#ntLista');
+    const { data, error } = await db.from('notas').select('*').order('fijada', {ascending:false}).order('actualizado_en', {ascending:false}).limit(300);
+    if(error){ cont.innerHTML = '<div class="assumption">No se pudieron leer las notas: ' + escHtml(error.message) + '. ¿Ya se corrió sql/26?</div>'; return; }
+    const nombres = {};
+    (typeof usuariosCache !== 'undefined' ? usuariosCache : []).forEach(u=>{ nombres[u.id] = u.nombre; });
+    if(miPerfil) nombres[miPerfil.id] = miPerfil.nombre;
+    const notas = data || [];
+    const tarjeta = n=>'<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:4px;' + (n.hecha ? 'opacity:.6;' : '') + '">'
+      + '<div style="display:flex;justify-content:space-between;gap:8px;"><b>' + (n.fijada ? '📌 ' : '') + (n.hecha ? '✓ ' : '') + escHtml(n.titulo) + '</b>'
+        + '<span style="white-space:nowrap;">'
+        + '<button class="chip" data-nt-fijar="' + n.id + '" title="' + (n.fijada ? 'Desfijar' : 'Fijar arriba') + '" style="background:var(--panel2);padding:2px 7px;">📌</button>'
+        + '<button class="chip" data-nt-hecha="' + n.id + '" title="' + (n.hecha ? 'Marcar pendiente' : 'Marcar hecha') + '" style="background:var(--panel2);padding:2px 7px;">' + (n.hecha ? '↺' : '✓') + '</button>'
+        + '<button class="chip" data-nt-editar="' + n.id + '" title="Editar" style="background:var(--panel2);padding:2px 7px;">✏️</button>'
+        + '<button class="chip" data-nt-borrar="' + n.id + '" title="Borrar" style="background:var(--panel2);color:var(--red);padding:2px 7px;">🗑️</button></span></div>'
+      + (notaEditando === n.id
+          ? '<input type="text" data-nt-t value="' + escHtml(n.titulo) + '"><textarea data-nt-x rows="4" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-size:13px;">' + escHtml(n.texto || '') + '</textarea>'
+            + '<button class="chip" data-nt-ok="' + n.id + '" style="background:#8a7a3b;color:#fff;">💾 Guardar cambios</button>'
+          : (n.texto ? '<div style="white-space:pre-wrap;font-size:13px;">' + escHtml(n.texto) + '</div>' : ''))
+      + '<div style="font-size:11px;color:var(--dim);">' + (nombres[n.autor] ? escHtml(nombres[n.autor]) + ' · ' : '')
+        + new Date(n.actualizado_en).toLocaleString('es-VE', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}) + '</div></div>';
+    const pend = notas.filter(n=>!n.hecha), hechas = notas.filter(n=>n.hecha);
+    cont.innerHTML = (pend.length ? pend.map(tarjeta).join('') : '<div class="empty">No hay notas pendientes.</div>')
+      + (hechas.length ? '<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--sub);font-weight:600;">Hechas (' + hechas.length + ')</summary>' + hechas.map(tarjeta).join('') + '</details>' : '');
+    const actualizar = async (id, campos)=>{
+      const { error } = await db.from('notas').update(campos).eq('id', id);
+      if(error){ alert('No se pudo guardar: ' + error.message); return; }
+      pintarLista();
+    };
+    cont.querySelectorAll('[data-nt-fijar]').forEach(b=>{ b.onclick = ()=>{ const n = notas.find(x=>x.id === b.dataset.ntFijar); actualizar(n.id, {fijada: !n.fijada}); }; });
+    cont.querySelectorAll('[data-nt-hecha]').forEach(b=>{ b.onclick = ()=>{ const n = notas.find(x=>x.id === b.dataset.ntHecha); actualizar(n.id, {hecha: !n.hecha}); }; });
+    cont.querySelectorAll('[data-nt-editar]').forEach(b=>{ b.onclick = ()=>{ notaEditando = notaEditando === b.dataset.ntEditar ? null : b.dataset.ntEditar; pintarLista(); }; });
+    cont.querySelectorAll('[data-nt-ok]').forEach(b=>{ b.onclick = ()=>{
+      const caja = b.closest('.comp-item');
+      const t = caja.querySelector('[data-nt-t]').value.trim();
+      if(!t){ alert('La nota necesita un título.'); return; }
+      notaEditando = null;
+      actualizar(b.dataset.ntOk, {titulo: t, texto: caja.querySelector('[data-nt-x]').value.trim() || null});
+    }; });
+    cont.querySelectorAll('[data-nt-borrar]').forEach(b=>{ b.onclick = async ()=>{
+      const n = notas.find(x=>x.id === b.dataset.ntBorrar);
+      if(!confirm('¿Borrar la nota "' + n.titulo + '"? No se puede deshacer.')) return;
+      const { error } = await db.from('notas').delete().eq('id', n.id);
+      if(error){ alert('No se pudo borrar: ' + error.message); return; }
+      pintarLista();
+    }; });
+  };
+
+  sec.querySelector('#ntGuardar').onclick = async ev=>{
+    const titulo = sec.querySelector('#ntTitulo').value.trim();
+    if(!titulo){ alert('Ponle un título a la nota.'); return; }
+    ev.target.disabled = true;
+    const { error } = await db.from('notas').insert({titulo, texto: sec.querySelector('#ntTexto').value.trim() || null,
+      fijada: sec.querySelector('#ntFijar').checked});
+    ev.target.disabled = false;
+    if(error){ alert('No se pudo guardar: ' + error.message); return; }
+    sec.querySelector('#ntTitulo').value = ''; sec.querySelector('#ntTexto').value = ''; sec.querySelector('#ntFijar').checked = false;
+    pintarLista();
+  };
+  pintarLista();
+}
+
 // ficha de cada empleado y sus conceptos fijos (lo que se copia a la nomina de cada mes)
 function pintarEmpleados(cont){
   const tiposFijos = ['salarial', 'no_salarial', 'deduccion'];
@@ -3177,7 +3409,9 @@ function pintarEmpleados(cont){
         + '<button class="chip" id="empAgregarC" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);flex:1;padding:10px;">➕ Agregar concepto</button>'
         + '<button class="chip" id="empGuardarC" style="background:#7a5aa6;color:#fff;flex:2;padding:10px;">💾 Guardar conceptos de ' + esc(e.nombre) + '</button></div>'
         + '<div class="assumption" style="margin-top:6px;">Solo el sueldo base es salarial: sobre él se calculan el seguro social y los pasivos. '
-        + 'Los cambios valen desde la próxima nómina que se abra.</div>';
+        + 'Los cambios valen desde la próxima nómina que se abra.</div>'
+        + '<div id="empPrestamos"></div>';
+      pintarPrestamosEmpleado(e, document.getElementById('empPrestamos'));
       ed.querySelectorAll('[data-quitar-c]').forEach(b=>{ b.onclick = ()=>{ leer(); filas.splice(Number(b.dataset.quitarC), 1); pintar(); }; });
       document.getElementById('empAgregarC').onclick = ()=>{ leer(); filas.push({id:null, nombre:'', tipo:'no_salarial', monto:0, por_dia:false, dias_defecto:0, condicional:false, quincena:0}); pintar(); };
       document.getElementById('empGuardarC').onclick = async ()=>{
@@ -3330,7 +3564,7 @@ async function cargarEgresos(){
     .filter(e=>e[campo]===id && (!tipo || e.tipo===tipo)).reduce((s,e)=>s+Number(e.monto_usd), 0);
   const [gs, noms, cob] = await Promise.all([
     db.from('gastos').select('id, periodo_id, descripcion, proveedor, monto, origen').neq('origen', 'nomina').gt('monto', 0).order('periodo_id').limit(2000),
-    db.from('nominas').select('id, periodo_id').eq('estado', 'cerrada'),
+    db.from('nominas').select('id, periodo_id, estado'),
     mesActual ? db.from('pagos').select('monto').eq('estado', 'confirmado').gte('fecha', mesActual + '-01').lt('fecha', mesSiguiente(mesActual) + '-01') : Promise.resolve({data:[]})
   ]);
   cobradoMes = (cob.data || []).reduce((s,p)=>s+Number(p.monto), 0);
@@ -3344,10 +3578,12 @@ async function cargarEgresos(){
     const lin = await db.from('nomina_lineas').select('*').in('nomina_id', nIds);
     (noms.data || []).forEach(n=>{
       const t = totalesDeLineas((lin.data || []).filter(l=>l.nomina_id===n.id));
-      [['nomina_q1', 'Nómina ' + n.periodo_id + ' · 1ra quincena', t.q1],
+      // con la nómina abierta solo se puede pagar la 1ra quincena; lo demás, al cerrarla
+      const abierta = n.estado !== 'cerrada';
+      [['nomina_q1', 'Nómina ' + n.periodo_id + ' · 1ra quincena' + (abierta ? ' (nómina abierta)' : ''), t.q1],
        ['nomina_q2', 'Nómina ' + n.periodo_id + ' · 2da quincena', t.q2],
        ['nomina_ley', 'Nómina ' + n.periodo_id + ' · IVSS, RPE y FAOV (retenciones + aportes)', t.retencion + t.aporte_patronal]
-      ].forEach(([tipo, concepto, monto])=>{
+      ].filter(([tipo])=>!abierta || tipo === 'nomina_q1').forEach(([tipo, concepto, monto])=>{
         const pend = Math.round((monto - pagadoDe('nomina_id', n.id, tipo)) * 100) / 100;
         if(pend > 0.005) porPagar.push({clave:tipo + n.id, tipo, nomina_id:n.id, periodo:n.periodo_id, concepto, monto, pendiente:pend});
       });
@@ -3716,7 +3952,7 @@ function renderEgresosSeccion(body){
   const formPago = p=>'<div style="border:1px solid #d35400;border-radius:10px;padding:8px 12px;margin:4px 0 10px;background:var(--panel);">'
     + '<div class="form-row"><label>Fecha del pago</label><input type="date" id="egFecha" value="' + new Date().toISOString().slice(0,10) + '"></div>'
     + '<div class="form-row"><label>Monto ($)</label><input type="number" step="0.01" id="egMonto" value="' + p.pendiente + '"></div>'
-    + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.01" id="egTasa" value="' + (tasaDia||'') + '" placeholder="Ej. 857,01"></div>'
+    + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.0001" id="egTasa" value="' + (tasaDia||'') + '" placeholder="Ej. 857,01"></div>'
     + '<div class="form-row"><label>Equivale a</label><input type="text" id="egBs" readonly></div>'
     + '<div class="form-row"><label>Forma</label><select id="egForma">'
       + ['Transferencia','Pago móvil','Efectivo','Otro'].map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
@@ -3773,6 +4009,13 @@ function renderEgresosSeccion(body){
     document.getElementById('egMonto').oninput = recalc;
     document.getElementById('egTasa').oninput = recalc;
     recalc();
+    // la tasa es la del día en que se paga
+    const tasaEgreso = async ()=>{
+      const t = await tasaDelDia(document.getElementById('egFecha').value);
+      if(t && document.getElementById('egTasa')){ document.getElementById('egTasa').value = t.tasa; recalc(); }
+    };
+    document.getElementById('egFecha').onchange = tasaEgreso;
+    tasaEgreso();
     document.getElementById('egCancelar').onclick = ()=>{ egresoAbierto = null; renderSidebar(); };
     document.getElementById('egConfirmar').onclick = async ()=>{
       const monto = parseFloat(document.getElementById('egMonto').value);
@@ -3971,6 +4214,7 @@ const SUBMENU_ADMIN = [
   ['banco',       '🏦 Banco',       '#2f8a8a', 'Banco'],
   ['inventario',  '📦 Inventario',  '#6b7f3a', 'Inventario'],
   ['avisos',      '📣 Avisos',      '#c9772f', 'Avisos a los propietarios'],
+  ['notas',       '📝 Notas',       '#8a7a3b', 'Notas de la junta'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
   ['usuarios',    '🔐 Usuarios',    '#5b6472', 'Usuarios del sistema']
 ];
@@ -3988,6 +4232,7 @@ function renderCuentasTab(body){
   // estas dos leen de la base al pintarse: solo cuando se abren
   if(adminSub === 'proveedores') renderProveedoresSeccion(body);
   if(adminSub === 'inventario') renderInventarioSeccion(body);
+  if(adminSub === 'notas') renderNotasSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Cuentas del mes': 'cabecera'};
@@ -4092,7 +4337,7 @@ function renderCuentasCompleto(body){
       + (egresosListos
           ? '<div class="form-row"><label>Ya se pagó</label><input type="checkbox" id="gPagado" style="width:auto;"></div>'
             + '<div id="gPagoDatos" style="display:none;">'
-            + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.01" id="gTasa" value="' + (tasaDia||'') + '"></div>'
+            + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.0001" id="gTasa" value="' + (tasaDia||'') + '"></div>'
             + '<div class="form-row"><label>Forma</label><select id="gForma">' + ['Transferencia','Pago móvil','Efectivo','Otro'].map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
             + '<div class="form-row"><label>Referencia</label><input type="text" id="gRefPago" placeholder="N.º de la operación"></div></div>'
           : '')
@@ -4177,7 +4422,13 @@ function renderCuentasCompleto(body){
     await refrescarCuentas();
   };
   const chkPag = document.getElementById('gPagado');
-  if(chkPag) chkPag.onchange = ()=>{ document.getElementById('gPagoDatos').style.display = chkPag.checked ? '' : 'none'; };
+  const tasaGasto = async ()=>{
+    if(!chkPag || !chkPag.checked) return;
+    const t = await tasaDelDia(document.getElementById('gFecha').value);
+    if(t) document.getElementById('gTasa').value = t.tasa;
+  };
+  if(chkPag) chkPag.onchange = ()=>{ document.getElementById('gPagoDatos').style.display = chkPag.checked ? '' : 'none'; tasaGasto(); };
+  if(chkPag) document.getElementById('gFecha').addEventListener('change', tasaGasto);
 
   lista.querySelectorAll('[data-borrar-gasto]').forEach(b=>{
     b.onclick = async ()=>{
