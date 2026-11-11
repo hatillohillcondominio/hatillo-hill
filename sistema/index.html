@@ -4208,6 +4208,155 @@ async function pintarListaRecibos(host, periodo){
   pintar('');
 }
 
+// ---------- Auditoría (sql/31): quién cambió qué y cuándo ----------
+// Solo la ven el admin y la junta. La tabla la llena la base sola (fn_auditar)
+// y nadie la puede editar ni borrar.
+const AUD_TABLAS = {
+  apartamentos:'Apartamentos', perfiles:'Usuarios', periodos:'Meses', gastos:'Gastos',
+  recibos:'Recibos', recibo_detalle:'Detalle de recibos', pagos:'Cobros', pago_aplicaciones:'Reparto de cobros',
+  cargos:'Cargos sueltos', multas:'Multas', egresos:'Pagos a proveedores', movimientos_banco:'Movimientos del banco',
+  cuentas_banco:'Cuentas del banco', nominas:'Nóminas', nomina_lineas:'Líneas de nómina', empleados:'Empleados',
+  empleado_conceptos:'Conceptos de empleados', prestamos_empleado:'Préstamos a empleados',
+  presupuestos:'Presupuestos', presupuesto_partidas:'Partidas del presupuesto', categorias_gasto:'Categorías de gasto',
+  proveedores:'Proveedores', productos:'Productos', inventario_movimientos:'Movimientos de inventario',
+  solicitudes_material:'Solicitudes de material', proyectos:'Proyectos', proyecto_aportes:'Aportes a proyectos',
+  proyecto_abonos:'Abonos a proyectos', configuracion:'Configuración', notas:'Notas', avisos_plantillas:'Plantillas de avisos',
+  datos_pago_portal:'Datos de pago del portal'
+};
+const AUD_ACCION = {INSERT:['Creó','var(--green)'], UPDATE:['Cambió','#3b78b5'], DELETE:['Borró','var(--red)']};
+const AUD_IGNORAR = ['actualizado_en', 'creado_en', 'importado_en'];
+const AUD_TITULO = ['descripcion','concepto','nombre','titulo','apartamento_id','clave','referencia'];
+let audFiltro = null;
+
+function audResumen(r){
+  const d = r.datos_despues || r.datos_antes || {};
+  const partes = [];
+  const t = AUD_TITULO.find(k=>d[k] !== undefined && d[k] !== null && d[k] !== '');
+  if(t) partes.push(String(d[t]));
+  if(d.apartamento_id && t !== 'apartamento_id') partes.push(d.apartamento_id);
+  const m = d.monto !== undefined ? d.monto : d.monto_usd;
+  if(m !== null && m !== undefined) partes.push(fmtMoney(Number(m)));
+  if(d.periodo_id) partes.push(d.periodo_id);
+  return partes.length ? partes.join(' · ') : (r.registro_id || '');
+}
+function audValor(v){
+  if(v === null || v === undefined || v === '') return '<i style="color:var(--dim);">vacío</i>';
+  if(typeof v === 'object') return escHtml(JSON.stringify(v));
+  const s = String(v);
+  return escHtml(s.length > 160 ? s.slice(0, 160) + '…' : s);
+}
+function audDetalle(r){
+  const a = r.datos_antes || {}, d = r.datos_despues || {};
+  const celda = 'style="padding:3px 6px;border-bottom:1px solid var(--border);vertical-align:top;word-break:break-word;"';
+  const tabla = (cab, filas)=>'<table style="width:100%;border-collapse:collapse;font-size:12px;margin:2px 0 10px;"><tr>'
+    + cab.map(c=>'<th ' + celda + ' align="left">' + c + '</th>').join('') + '</tr>' + filas.join('') + '</table>';
+  if(r.accion === 'UPDATE'){
+    const filas = Object.keys(d).filter(k=>!AUD_IGNORAR.includes(k) && JSON.stringify(a[k]) !== JSON.stringify(d[k]))
+      .map(k=>'<tr><td ' + celda + '>' + esc(k) + '</td><td ' + celda + '>' + audValor(a[k]) + '</td><td ' + celda + '>' + audValor(d[k]) + '</td></tr>');
+    if(!filas.length) return '<div class="assumption">Sin cambios visibles (solo fechas internas).</div>';
+    return tabla(['Campo', 'Antes', 'Después'], filas);
+  }
+  const datos = r.accion === 'DELETE' ? a : d;
+  const filas = Object.keys(datos).filter(k=>!AUD_IGNORAR.includes(k) && datos[k] !== null && datos[k] !== '')
+    .map(k=>'<tr><td ' + celda + '>' + esc(k) + '</td><td ' + celda + '>' + audValor(datos[k]) + '</td></tr>');
+  return tabla(['Campo', r.accion === 'DELETE' ? 'Lo que se borró' : 'Lo que se creó'], filas);
+}
+
+function renderAuditoriaSeccion(body){
+  if(!audFiltro){
+    const hoy = new Date();
+    const hace = new Date(hoy.getTime() - 7 * 86400000);
+    const iso = x=>x.toLocaleDateString('en-CA', {timeZone:'America/Caracas'});
+    audFiltro = {desde: iso(hace), hasta: iso(hoy), usuario: '', tabla: '', accion: '', texto: ''};
+  }
+  const f = audFiltro;
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#4a4a6a;"><span class="tcIcono">🕵️</span>Auditoría</h3>'
+    + '<div class="assumption" style="margin-top:0;">Todo lo que se crea, cambia o borra en el sistema queda aquí, con quién lo hizo y cuándo. Nadie puede editar ni borrar este registro. Solo lo ven el admin y la junta.</div>'
+    + '<div class="form-row two"><div><label>Desde</label><input type="date" id="audDesde" value="' + f.desde + '"></div>'
+      + '<div><label>Hasta</label><input type="date" id="audHasta" value="' + f.hasta + '"></div></div>'
+    + '<div class="form-row two"><div><label>Usuario</label><select id="audUsuario"><option value="">Todos</option></select></div>'
+      + '<div><label>Qué hizo</label><select id="audAccion"><option value="">Todo</option><option value="INSERT">Creó</option><option value="UPDATE">Cambió</option><option value="DELETE">Borró</option></select></div></div>'
+    + '<div class="form-row two"><div><label>Dónde</label><select id="audTabla"><option value="">Todas las secciones</option>'
+      + Object.entries(AUD_TABLAS).sort((x,y)=>x[1].localeCompare(y[1])).map(([k,n])=>'<option value="' + k + '">' + esc(n) + '</option>').join('') + '</select></div>'
+      + '<div><label>Buscar en los datos</label><input type="text" id="audTexto" placeholder="Ej.: A-PB-2, 99728, Corpoelec" value="' + escHtml(f.texto) + '"></div></div>'
+    + '<button class="chip" id="audBuscar" style="background:#4a4a6a;color:#fff;width:100%;padding:8px;">🔎 Buscar</button>'
+    + '<div id="audLista" style="margin-top:12px;"><div class="assumption">Cargando…</div></div>';
+  body.appendChild(sec);
+  const $ = id=>sec.querySelector('#' + id);
+  $('audAccion').value = f.accion;
+  $('audTabla').value = f.tabla;
+
+  // usuarios que pueden haber hecho cambios (los vecinos solo reportan pagos)
+  db.from('perfiles').select('correo, nombre, rol').neq('rol', 'vecino').order('correo').then(({data})=>{
+    (data || []).forEach(p=>{
+      if(!p.correo) return;
+      const o = document.createElement('option');
+      o.value = p.correo;
+      o.textContent = (p.nombre ? p.nombre + ' · ' : '') + p.correo;
+      $('audUsuario').appendChild(o);
+    });
+    $('audUsuario').value = f.usuario;
+  });
+
+  const POR_PAGINA = 100;
+  let pagina = 0, filas = [];
+  const fmtHora = s=>new Date(s).toLocaleString('es-VE', {timeZone:'America/Caracas', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+  const pintar = hayMas=>{
+    const cont = $('audLista');
+    if(!filas.length){
+      cont.innerHTML = '<div class="empty">No hay movimientos con esos filtros.</div>'
+        + (hayMas ? '<button class="chip" id="audMas" style="width:100%;margin-top:6px;">Buscar más atrás</button>' : '');
+    } else {
+      cont.innerHTML = '<div style="font-size:12px;color:var(--sub);margin-bottom:6px;">' + filas.length + (hayMas ? '+' : '') + ' movimientos · toca uno para ver el detalle</div>'
+        + filas.map((r, i)=>{
+          const [verbo, color] = AUD_ACCION[r.accion] || [r.accion, 'var(--sub)'];
+          return '<div class="comp-item" data-aud="' + i + '" style="cursor:pointer;">'
+            + '<span class="t"><b style="color:' + color + ';">' + verbo + '</b> · ' + esc(AUD_TABLAS[r.tabla] || r.tabla)
+            + ' · ' + esc(audResumen(r)) + '<br><span style="color:var(--dim);font-size:11px;">' + fmtHora(r.ocurrido_en)
+            + ' · ' + esc(r.usuario_correo || 'la base (proceso automático o SQL)') + '</span></span>'
+            + '</div><div data-aud-det="' + i + '" style="display:none;"></div>';
+        }).join('')
+        + (hayMas ? '<button class="chip" id="audMas" style="width:100%;margin-top:6px;">Cargar más</button>' : '');
+    }
+    cont.querySelectorAll('[data-aud]').forEach(el=>{ el.onclick = ()=>{
+      const det = cont.querySelector('[data-aud-det="' + el.dataset.aud + '"]');
+      if(det.style.display === 'none'){ det.innerHTML = audDetalle(filas[Number(el.dataset.aud)]); det.style.display = ''; }
+      else det.style.display = 'none';
+    }; });
+    const mas = cont.querySelector('#audMas');
+    if(mas) mas.onclick = ()=>{ mas.disabled = true; mas.textContent = 'Cargando…'; pagina++; cargar(false); };
+  };
+  const cargar = async desdeCero=>{
+    if(desdeCero){ pagina = 0; filas = []; $('audLista').innerHTML = '<div class="assumption">Cargando…</div>'; }
+    let q = db.from('auditoria').select('id, tabla, registro_id, accion, datos_antes, datos_despues, usuario_correo, ocurrido_en')
+      .order('ocurrido_en', {ascending:false}).order('id', {ascending:false});
+    // las fechas del filtro son de Caracas (UTC-4)
+    if(f.desde) q = q.gte('ocurrido_en', f.desde + 'T00:00:00-04:00');
+    if(f.hasta) q = q.lte('ocurrido_en', f.hasta + 'T23:59:59.999-04:00');
+    if(f.usuario) q = q.eq('usuario_correo', f.usuario);
+    if(f.tabla) q = q.eq('tabla', f.tabla);
+    if(f.accion) q = q.eq('accion', f.accion);
+    // con texto se trae más y se filtra aquí: los datos son JSON
+    const texto = f.texto.trim().toLowerCase();
+    const lote = texto ? 1000 : POR_PAGINA;
+    const { data, error } = await q.range(pagina * lote, pagina * lote + lote - 1);
+    if(error){ $('audLista').innerHTML = '<div class="assumption">No se pudo leer la auditoría: ' + escHtml(error.message) + '</div>'; return; }
+    let nuevas = data || [];
+    if(texto) nuevas = nuevas.filter(r=>(JSON.stringify(r.datos_despues || '') + JSON.stringify(r.datos_antes || '') + (r.registro_id || '')).toLowerCase().includes(texto));
+    filas = filas.concat(nuevas);
+    pintar((data || []).length === lote);
+  };
+  $('audBuscar').onclick = ()=>{
+    Object.assign(f, {desde: $('audDesde').value, hasta: $('audHasta').value, usuario: $('audUsuario').value,
+      tabla: $('audTabla').value, accion: $('audAccion').value, texto: $('audTexto').value});
+    cargar(true);
+  };
+  $('audTexto').onkeydown = e=>{ if(e.key === 'Enter') $('audBuscar').click(); };
+  cargar(true);
+}
+
 // secciones de Administracion: [clave, etiqueta, color, como empieza su titulo]
 const SUBMENU_ADMIN = [
   ['gastos',      '🧾 Gastos',      '#c1503f', 'Gastos'],
@@ -4221,6 +4370,7 @@ const SUBMENU_ADMIN = [
   ['inventario',  '📦 Inventario',  '#6b7f3a', 'Inventario'],
   ['avisos',      '📣 Avisos',      '#c9772f', 'Avisos a los propietarios'],
   ['notas',       '📝 Notas',       '#8a7a3b', 'Notas de la junta'],
+  ['auditoria',   '🕵️ Auditoría',   '#4a4a6a', 'Auditoría'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
   ['usuarios',    '🔐 Usuarios',    '#5b6472', 'Usuarios del sistema']
 ];
@@ -4232,6 +4382,8 @@ function renderCuentasTab(body){
   if(!puedeEditar()) return;
   const verUsuarios = rolesAsignables().length > 0;
   if(adminSub === 'usuarios' && !verUsuarios) adminSub = 'gastos';
+  const verAuditoria = tieneRol('admin', 'junta');
+  if(adminSub === 'auditoria' && !verAuditoria) adminSub = 'gastos';
   const bloqueReportados = renderReportadosSeccion(body);
   renderAvisosSeccion(body);
   renderExportarSeccion(body);
@@ -4239,6 +4391,7 @@ function renderCuentasTab(body){
   if(adminSub === 'proveedores') renderProveedoresSeccion(body);
   if(adminSub === 'inventario') renderInventarioSeccion(body);
   if(adminSub === 'notas') renderNotasSeccion(body);
+  if(adminSub === 'auditoria') renderAuditoriaSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Cuentas del mes': 'cabecera'};
@@ -4280,7 +4433,7 @@ function renderCuentasTab(body){
   }
   const menu = document.createElement('div');
   menu.className = 'subMenu';
-  menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>k !== 'usuarios' || verUsuarios).map(([k, etiqueta, color])=>
+  menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verUsuarios) && (k !== 'auditoria' || verAuditoria)).map(([k, etiqueta, color])=>
     '<button style="--c:' + color + ';"' + (k===adminSub ? ' class="activo"' : '') + ' data-sub-ir="' + k + '">' + etiqueta
     + (k === 'cobros' && reportadosCache.length ? ' <span class="subBadge">' + reportadosCache.length + '</span>' : '') + '</button>').join('');
   body.insertBefore(menu, body.firstChild);
