@@ -3575,6 +3575,8 @@ async function cargarEgresos(){
   ]);
   cobradoMes = (cob.data || []).reduce((s,p)=>s+Number(p.monto), 0);
   (gs.data || []).forEach(g=>{
+    // los meses de la administradora anterior los pagó ella: no quedan por pagar aquí
+    if(esMesExterno(g.periodo_id)) return;
     const pend = Math.round((Number(g.monto) - pagadoDe('gasto_id', g.id)) * 100) / 100;
     if(pend > 0.005) porPagar.push({clave:'g'+g.id, tipo:'gasto', gasto_id:g.id, periodo:g.periodo_id,
       concepto:g.descripcion + (g.proveedor ? ' · ' + g.proveedor : ''), monto:Number(g.monto), pendiente:pend});
@@ -3597,6 +3599,10 @@ async function cargarEgresos(){
   }
 }
 
+function esMesExterno(periodoId){
+  const per = periodosCache.find(x=>x.id === periodoId);
+  return !!(per && per.externo);
+}
 function pagadoDeGasto(gastoId){
   return egresosCache.filter(e=>e.gasto_id===gastoId).reduce((s,e)=>s+Number(e.monto_usd), 0);
 }
@@ -4528,7 +4534,8 @@ function renderCuentasCompleto(body){
         + (g.categorias_gasto ? ' <span style="color:var(--dim);">(' + esc(g.categorias_gasto.nombre) + ')</span>' : '')
         + (g.prorrateable ? '' : ' <span style="color:var(--amber);">no se reparte</span>')
         + etiquetaSoporte(g)
-        + (egresosListos && g.origen !== 'nomina' && Number(g.monto) > 0
+        + (esMesExterno(g.periodo_id) ? ' <span style="color:var(--dim);">lo pagó la administradora anterior</span>'
+          : egresosListos && g.origen !== 'nomina' && Number(g.monto) > 0
             ? (pagadoDeGasto(g.id) >= Number(g.monto) - 0.005
                 ? ' <span style="color:var(--green);">✓ pagado</span>'
                 : ' <span style="color:#d35400;">' + (pagadoDeGasto(g.id) > 0 ? 'abonado ' + fmtMoney(pagadoDeGasto(g.id)) : 'por pagar') + '</span>')
