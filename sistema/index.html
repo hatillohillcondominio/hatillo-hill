@@ -2717,7 +2717,9 @@ function totalesDeLineas(lineas){
   });
   t.asignaciones = t.salarial + t.no_salarial + t.pago_pasivo;
   t.neto = t.asignaciones - t.deduccion - t.retencion;
-  t.costo = t.asignaciones + t.aporte_patronal - t.deduccion;   // lo que le cuesta al condominio
+  // las cuotas de prestamos devuelven plata que ya salio del banco: no rebajan el costo (sql/26)
+  t.cuotas_prestamo = lineas.filter(l=>l.aplica && l.tipo==='deduccion' && l.prestamo_id).reduce((s,l)=>s+montoLinea(l), 0);
+  t.costo = t.asignaciones + t.aporte_patronal - (t.deduccion - t.cuotas_prestamo);   // lo que le cuesta al condominio
   return t;
 }
 
@@ -2955,13 +2957,16 @@ function renderNominaSeccion(body){
           + (aportes.length ? '<div class="comp-item"><span class="t">Aportes del patrono: ' + aportes.map(a=>esc(a.concepto) + ' ' + fmtMoney(montoLinea(a))).join(' · ') + '</span><span>' + fmtMoney(t.aporte_patronal) + '</span></div>' : '')
           + '</div>';
       }).join('')
-      + '<div class="presuControl"><span>Total a pagar a los empleados</span><b>' + fmtMoney(tot.neto) + bs(tot.neto) + '</b></div>'
+      + '<div class="presuControl" style="background:var(--panel2);"><span>💵 A pagar el <b>15</b> (1ra quincena)</span><b>' + fmtMoney(tot.q1) + bs(tot.q1) + '</b></div>'
+      + '<div class="presuControl" style="background:var(--panel2);"><span>💵 A pagar el <b>30</b> (2da quincena)</span><b>' + fmtMoney(tot.q2) + bs(tot.q2) + '</b></div>'
+      + '<div class="presuControl"><span>Total del mes a los empleados (15 + 30)</span><b>' + fmtMoney(tot.neto) + bs(tot.neto) + '</b></div>'
       + '<div class="comp-item"><span class="t">+ Retenciones que se pagan al IVSS, RPE y FAOV</span><span>' + fmtMoney(tot.retencion) + '</span></div>'
       + '<div class="comp-item"><span class="t">+ Aportes del patrono</span><span>' + fmtMoney(tot.aporte_patronal) + '</span></div>'
+      + (tot.cuotas_prestamo ? '<div class="comp-item"><span class="t">+ Cuotas de préstamos descontadas (esa plata ya salió del banco al prestarla)</span><span>' + fmtMoney(tot.cuotas_prestamo) + '</span></div>' : '')
       + '<div class="presuControl"><span>Costo de la nómina para el condominio (entra como gasto)</span><b>' + fmtMoney(tot.costo) + '</b></div>'
       + (cerrada
           ? '<div class="assumption">Nómina cerrada: ya llevó sus gastos a ' + mesLegible(mesActual) + '.</div>'
-          : '<div class="assumption">Los préstamos que se descuentan bajan el costo: el dinero vuelve al condominio. '
+          : '<div class="assumption">El costo es el del mes completo; lo que se paga en cada quincena está arriba. Las cuotas de préstamos registrados no bajan el costo: el préstamo no fue gasto, así que su devolución tampoco lo rebaja. '
             + 'Vacaciones, utilidades, prestaciones y el bono de fin de año se agregan el mes en que se pagan (botones ➕). '
             + 'Porcentajes: IVSS ' + ((nominaPct.ivss_patrono||0)*100) + ' % + ' + ((nominaPct.ivss_empleado||0)*100) + ' %, RPE '
             + ((nominaPct.rpe_patrono||0)*100) + ' % + ' + ((nominaPct.rpe_empleado||0)*100) + ' %, FAOV '
