@@ -3542,6 +3542,7 @@ async function cargarCuentas(){
     ]);
     gastosCache = g.data || [];
     pagosCache = p.data || [];
+    await cargarRefsBanco();
   } else {
     gastosCache = []; pagosCache = [];
   }
@@ -4373,9 +4374,7 @@ function renderCuentasCompleto(body){
         '<div class="comp-item"><span class="t">' + esc(g.fecha) + ' · ' + esc(g.descripcion)
         + (g.categorias_gasto ? ' <span style="color:var(--dim);">(' + esc(g.categorias_gasto.nombre) + ')</span>' : '')
         + (g.prorrateable ? '' : ' <span style="color:var(--amber);">no se reparte</span>')
-        + (g.origen === 'nomina' ? '' : tieneSoporte(g)
-            ? ' <span style="color:var(--green);" title="' + escHtml((g.documento ? 'Factura ' + g.documento : '') + (g.comprobante_url ? ' · con archivo' : '')) + '">🧾' + (g.comprobante_url ? '📎' : '') + '</span>'
-            : ' <span style="color:var(--amber);">⚠️ sin soporte</span>')
+        + etiquetaSoporte(g)
         + (egresosListos && g.origen !== 'nomina' && Number(g.monto) > 0
             ? (pagadoDeGasto(g.id) >= Number(g.monto) - 0.005
                 ? ' <span style="color:var(--green);">✓ pagado</span>'
@@ -5649,7 +5648,37 @@ const UNIDADES = ['unidad', 'par', 'juego', 'caja', 'paquete', 'bolsa', 'saco', 
 // ---------- Soporte de un gasto: factura o recibo adjunto (sql/28) ----------
 // La foto o el PDF va al bucket privado "comprobantes"; en el gasto queda la
 // ruta, el numero de factura y el proveedor (con su RIF o cedula en su ficha).
-const tieneSoporte = g=>!!(g.comprobante_url || (g.documento && String(g.documento).trim()));
+// Comisiones del banco y servicios pagados en línea (luz, agua) no traen factura:
+// su soporte son las referencias de los movimientos del banco conciliados con el gasto.
+const CATEGORIAS_SOPORTE_BANCO = ['bancarios', 'electricidad', 'agua'];
+const soporteEsBanco = g=>CATEGORIAS_SOPORTE_BANCO.includes(g.categoria_id);
+let refsBancoGasto = {};      // gasto_id -> [{referencia, fecha, monto}] de movimientos_banco
+async function cargarRefsBanco(){
+  refsBancoGasto = {};
+  const ids = gastosCache.filter(soporteEsBanco).map(g=>g.id);
+  if(!ids.length) return;
+  const eg = await db.from('egresos').select('id, gasto_id').in('gasto_id', ids);
+  if(eg.error || !(eg.data || []).length) return;
+  const gastoDe = Object.fromEntries(eg.data.map(e=>[e.id, e.gasto_id]));
+  const mv = await db.from('movimientos_banco').select('egreso_id, referencia, fecha, monto')
+    .in('egreso_id', Object.keys(gastoDe)).eq('conciliado', true).order('fecha');
+  (mv.data || []).forEach(m=>{ (refsBancoGasto[gastoDe[m.egreso_id]] ||= []).push(m); });
+}
+const refsDeGasto = g=>refsBancoGasto[g.id] || [];
+const tieneSoporte = g=>!!(g.comprobante_url || (g.documento && String(g.documento).trim())
+  || (soporteEsBanco(g) && refsDeGasto(g).length));
+function etiquetaSoporte(g){
+  if(g.origen === 'nomina') return '';
+  if(soporteEsBanco(g) && !g.comprobante_url && !(g.documento && String(g.documento).trim())){
+    const r = refsDeGasto(g);
+    return r.length
+      ? ' <span style="color:var(--green);" title="Soporte: ' + escHtml(r.map(m=>(m.referencia || 's/ref') + ' (' + m.fecha + ')').join(', ')) + '">🏦 ' + (r.length === 1 ? 'ref. ' + esc(r[0].referencia || '') : r.length + ' ref. del banco') + '</span>'
+      : ' <span style="color:var(--amber);">⚠️ falta conciliar con el banco</span>';
+  }
+  return tieneSoporte(g)
+    ? ' <span style="color:var(--green);" title="' + escHtml((g.documento ? 'Factura ' + g.documento : '') + (g.comprobante_url ? ' · con archivo' : '')) + '">🧾' + (g.comprobante_url ? '📎' : '') + '</span>'
+    : ' <span style="color:var(--amber);">⚠️ sin soporte</span>';
+}
 async function verComprobante(ruta){
   const v = window.open('', '_blank');
   const { data, error } = await db.storage.from('comprobantes').createSignedUrl(ruta, 300);
@@ -5658,7 +5687,12 @@ async function verComprobante(ruta){
 }
 async function abrirSoporteGasto(g, host, mesAbierto, alTerminar){
   const prov = g.proveedor_id ? (await db.from('proveedores').select('id, nombre, rif').eq('id', g.proveedor_id).maybeSingle()).data : null;
+  const refs = soporteEsBanco(g) ? refsDeGasto(g) : [];
   host.innerHTML = '<div style="border:1px solid var(--border);border-radius:8px;padding:4px 10px 8px;margin:2px 0 10px;">'
+    + (soporteEsBanco(g) ? '<div class="assumption" style="margin-top:6px;">🏦 Este gasto no lleva factura: el banco no la da. Su soporte son las referencias de los movimientos del banco'
+        + (refs.length ? ':<br>' + refs.map(m=>'<b>' + esc(m.referencia || 's/ref') + '</b> · ' + esc(m.fecha) + ' · ' + fmtBs(Math.abs(Number(m.monto)))).join('<br>')
+                       : '. Todavía no está conciliado: concílialo en Administración › Banco.')
+        + '</div>' : '')
     + '<div class="form-row"><label>Descripción</label><input type="text" data-s="descripcion" value="' + escHtml(g.descripcion || '') + '"></div>'
     + (mesAbierto ? '<div class="form-row"><label>Categoría</label><select data-s="categoria">'
         + categoriasCache.map(c=>'<option value="' + c.id + '"' + (c.id === g.categoria_id ? ' selected' : '') + '>' + esc(c.nombre) + '</option>').join('') + '</select></div>' : '')
