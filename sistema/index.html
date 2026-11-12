@@ -2890,33 +2890,52 @@ function pagoDeQuincena(nominaId, q, empId){
 }
 
 // lo que se le paga a un empleado en una quincena, concepto por concepto.
-// Los descuentos (deducciones, préstamos, IVSS/RPE/FAOV) se restan del salario
-// (del concepto salarial mayor); si no alcanza, del siguiente concepto.
+// * Retenciones (IVSS/RPE/FAOV) y faltas: SOLO del sueldo base, con nota.
+// * Cuota de un préstamo (descuento acordado): se rebaja de los bonos, en el
+//   orden de la nómina (un bono completo y luego el siguiente), sin tocar el
+//   sueldo base ni el cesta ticket; cada bono lleva su nota en rojo.
+const esCestaTicket = c=>/cesta/i.test(c || '');
 function conceptosPagoQuincena(lin, q){
   const idx = q === 1 ? 0 : 1, r2 = n=>Math.round(n * 100) / 100;
   const pos = [], descs = [], cuotas = [];
-  lin.filter(l=>l.aplica).forEach(l=>{
+  lin.filter(l=>l.aplica).slice().sort((a,b)=>(a.orden||0) - (b.orden||0)).forEach(l=>{
     const v = r2(partesQuincena(l)[idx]);
     if(!(v > 0.004)) return;
     if(['salarial','no_salarial','pago_pasivo'].includes(l.tipo)){
       const ya = pos.find(p=>p.concepto === l.concepto);
       if(ya) ya.bruto = r2(ya.bruto + v); else pos.push({concepto: l.concepto, tipo: l.tipo, bruto: v});
     } else if(l.tipo === 'deduccion' && l.prestamo_id){
-      // cuota de un préstamo: línea aparte, en negativo
       const m = /\((\d+) de (\d+)\)/.exec(l.concepto || '');
-      cuotas.push({concepto: l.concepto, tipo: 'prestamo', bruto: -v, monto: -v, descuento: 0, descuentos: [],
-        nota: 'Descuento acordado' + (m ? ' · cuota ' + m[1] + ' de ' + m[2] : '')
-          + ' · ' + fmtMoney(montoLinea(l)) + ' del mes' + (quincenaDe(l) === 0 ? ', la mitad en cada quincena' : '')});
+      const mes = montoLinea(l), qq = quincenaDe(l);
+      // 'Cuota del préstamo del 04/11 (1 de 3)' -> 'préstamo del 04/11'
+      const cual = (l.concepto || '').replace(/^cuota\s+del?\s+/i, '').replace(/\s*\(\d+ de \d+\)\s*$/, '');
+      cuotas.push({monto: v, nota: 'Descuento acordado · cuota ' + (m ? m[1] + ' de ' + m[2] + ' ' : '') + 'del ' + cual
+        + (qq === 0 ? ' · ' + fmtMoney(mes) + ' del mes: ' + fmtMoney(r2(mes/2)) + ' el 15 y ' + fmtMoney(r2(mes/2)) + ' el 30'
+                    : ' · ' + fmtMoney(mes) + ' completo el ' + (qq === 1 ? '15' : '30'))});
     } else if(l.tipo === 'deduccion' || l.tipo === 'retencion') descs.push({concepto: l.concepto, monto: v});
   });
-  pos.forEach(p=>{ p.descuento = 0; p.monto = p.bruto; p.descuentos = []; });
-  // las retenciones y demás deducciones salen SOLO del sueldo base; los bonos van completos
+  pos.forEach(p=>{ p.descuento = 0; p.monto = p.bruto; p.descuentos = []; p.acordado = 0; });
   const sal = pos.filter(p=>p.tipo === 'salarial').sort((a,b)=>b.bruto - a.bruto)[0];
-  const totDesc = r2(descs.reduce((s,d)=>s+d.monto, 0));
-  if(sal){ sal.descuentos = descs; sal.descuento = totDesc; sal.monto = r2(sal.bruto - totDesc); }
-  else if(totDesc > 0.004) cuotas.unshift({concepto: 'Deducciones', tipo: 'deduccion', bruto: -totDesc, monto: -totDesc, descuento: 0, descuentos: [],
-    nota: descs.map(d=>d.concepto + ' ' + fmtMoney(d.monto)).join(' · ')});
-  return pos.concat(cuotas);
+  const quitar = (p, monto, d)=>{ const x = r2(Math.min(monto, p.monto)); if(x <= 0.004) return 0;
+    p.descuentos.push(Object.assign({}, d, {monto: x})); p.descuento = r2(p.descuento + x); p.monto = r2(p.monto - x); return x; };
+  // retenciones y faltas: del sueldo base
+  descs.forEach(d=>{
+    let resta = d.monto;
+    if(sal) resta = r2(resta - quitar(sal, resta, d));
+    for(const p of pos){ if(resta <= 0.004) break; if(p !== sal && !esCestaTicket(p.concepto)) resta = r2(resta - quitar(p, resta, d)); }
+  });
+  // cuota del préstamo: de los bonos (sin sueldo base ni cesta ticket); si no alcanza, del sueldo base
+  const bonos = pos.filter(p=>p.tipo !== 'salarial' && !esCestaTicket(p.concepto));
+  cuotas.forEach(c=>{
+    let resta = c.monto;
+    for(const p of bonos.concat(sal ? [sal] : [])){
+      if(resta <= 0.004) break;
+      const x = quitar(p, resta, {concepto: 'descuento acordado', monto: 0, acordado: true});
+      p.acordado = r2(p.acordado + x); resta = r2(resta - x);
+    }
+  });
+  pos.acordados = cuotas;
+  return pos;
 }
 
 // conceptos pagados de un egreso de nómina (tabla egreso_conceptos, sql/33)
@@ -3727,7 +3746,7 @@ async function cargarEgresos(){
           const emp = empleadosCache.find(e=>e.id===empId);
           if(pend > 0.005) porPagar.push({clave:tipo + n.id + '_' + empId, tipo, nomina_id:n.id, empleado_id:empId, q,
             periodo:n.periodo_id, concepto:'Nómina ' + n.periodo_id + ' · ' + nombreQ + ' · ' + (emp ? emp.nombre : 'empleado'),
-            monto, pendiente:pend, conceptos});
+            monto, pendiente:pend, conceptos, acordados: conceptos.acordados || []});
         });
       });
       const ley = t.retencion + t.aporte_patronal;
@@ -4102,13 +4121,16 @@ function renderEgresosSeccion(body){
 
   // nómina de un empleado: qué conceptos cubre esta transferencia
   const formConceptos = p=>'<div class="assumption" style="margin:0 0 6px;">Marca los conceptos que cubre <b>esta transferencia</b>. Si pagaste cada concepto por separado, regístralos uno por uno, cada uno con su referencia.</div>'
+    + (p.acordados && p.acordados.length ? '<div style="color:var(--red);font-size:12px;margin:0 0 6px;">' + p.acordados.map(c=>'➖ ' + fmtMoney(c.monto) + ' · ' + esc(c.nota)).join('<br>')
+        + '<br><span style="font-size:11px;">Se rebaja de los bonos (no del sueldo base ni del cesta ticket): mira la nota en rojo de cada uno.</span></div>' : '')
     + p.conceptos.map((c, i)=>{
       const abierto = Math.abs(c.pendiente) > 0.004, neg = c.monto < 0;
       return '<div class="comp-item" style="align-items:center;' + (abierto ? '' : 'opacity:.55;') + '">'
       + '<label class="t" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><input type="checkbox" data-eg-con="' + i + '"' + (abierto ? ' checked' : ' disabled') + '> '
       + (neg ? '<span style="color:var(--red);">' + esc(c.concepto) + '</span>' : esc(c.concepto))
-      + (c.descuento ? ' <span style="color:var(--sub);font-size:11px;">(' + fmtMoney(c.bruto) + ' − '
-          + c.descuentos.map(d=>esc(d.concepto) + ' ' + fmtMoney(d.monto)).join(' − ') + ' = ' + fmtMoney(c.monto) + ')</span>' : '')
+      + (c.descuentos.some(d=>!d.acordado) ? ' <span style="color:var(--sub);font-size:11px;">(' + fmtMoney(c.bruto) + ' − '
+          + c.descuentos.filter(d=>!d.acordado).map(d=>esc(d.concepto) + ' ' + fmtMoney(d.monto)).join(' − ') + ')</span>' : '')
+      + (c.acordado ? ' <span style="color:var(--red);font-size:11px;font-weight:600;">− ' + fmtMoney(c.acordado) + ' por descuento acordado (' + fmtMoney(c.bruto) + ' → ' + fmtMoney(c.monto) + ')</span>' : '')
       + (c.nota ? ' <span style="color:var(--sub);font-size:11px;">· ' + esc(c.nota) + '</span>' : '')
       + (Math.abs(c.pagado) > 0.004 ? ' <span style="color:var(--green);font-size:11px;">' + (abierto ? (neg ? 'aplicado ' : 'pagado ') + fmtMoney(Math.abs(c.pagado)) : (neg ? '✓ aplicado' : '✓ pagado')) + '</span>' : '')
       + '</label>'
