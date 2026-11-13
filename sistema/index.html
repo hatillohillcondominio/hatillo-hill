@@ -3127,8 +3127,9 @@ function renderNominaSeccion(body){
             + '<span style="color:var(--green);font-weight:700;">Cobra ' + fmtMoney(t.neto) + bs(t.neto) + '</span></div>'
           + (cerrada || descuentoAbierto !== e.id ? '' : formDescuento(e, lin))
           + cuadroQuincenas(lin, t, bs)
-          + (cerrada ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
-              + [1, 2].map(q=>'<button class="chip" data-recibo-emp="' + e.id + '" data-recibo-q="' + q + '" style="background:var(--green);color:#fff;">📲 Recibo del '
+          // el recibo de una quincena se puede mandar en cuanto está pagada, aunque la nómina siga abierta
+          + (cerrada || [1, 2].some(q=>pagoDeQuincena(nominaMes.id, q, e.id)) ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
+              + [1, 2].filter(q=>cerrada || pagoDeQuincena(nominaMes.id, q, e.id)).map(q=>'<button class="chip" data-recibo-emp="' + e.id + '" data-recibo-q="' + q + '" style="background:var(--green);color:#fff;">📲 Recibo del '
                 + (q === 1 ? '15' : '30') + (pagoDeQuincena(nominaMes.id, q, e.id) ? ' ✓ pagado' : '') + '</button>').join('')
               + (toWhatsAppNumber(e.telefono) ? '' : '<span style="font-size:11px;color:var(--amber);align-self:center;">⚠️ sin teléfono en su ficha</span>')
               + '</div>' : '')
