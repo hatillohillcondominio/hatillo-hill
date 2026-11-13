@@ -4169,19 +4169,59 @@ async function prepararCargaNomina(file){
   const filas = [];
   for(const m of salidas){
     const b = idDe[clave(m)] || {};
-    const t = await tasaDelDia(m.fecha);
     const bs = Math.abs(m.monto);
     const tr = datosTransferencia(m);
     const emp = tr.ced || tr.cta ? empleadosCache.find(e=>(tr.ced && e.cedula && sinCeros(e.cedula) === tr.ced)
                                     || (tr.cta && e.cuenta_banco && soloDigitos(e.cuenta_banco) === tr.cta)) : null;
     const ya = b.conciliado ? 'ya conciliado en Banco'
       : egresosCache.some(e=>mismaReferencia(e.referencia, m.referencia) && Math.abs(Number(e.monto_bs) - bs) < 1) ? 'ya registrado en Pagos' : '';
-    filas.push({m, movId: b.id || null, ya, bs, tasa: t ? t.tasa : null, usd: t ? redondear2(bs / t.tasa) : null,
+    filas.push({m, movId: b.id || null, ya, bs, tasa: null, usd: null,
       tr, emp, q: quincenaDelTexto(tr.motivo), opciones: [], elegida: '', duda: ''});
   }
   // las transferencias salen una tras otra: se ordenan por referencia
   filas.sort((a,b)=>(Number(soloDigitos(a.m.referencia)) || 0) - (Number(soloDigitos(b.m.referencia)) || 0) || (a.m.fecha < b.m.fecha ? -1 : 1));
 
+  // La nómina se calcula con una tasa fija: la del día en que se cargan las
+  // transferencias en el banco, que puede ser anterior a la fecha en que el banco
+  // las procesa. Por cada fecha del archivo se prueba la tasa de ese día y la de
+  // los 7 días anteriores, y se toma la que hace cuadrar más transferencias.
+  const hist = await cargarTasasHist();
+  const tasas = {};
+  for(const fecha of [...new Set(filas.filter(f=>!f.ya).map(f=>f.m.fecha))]){
+    const desde = new Date(new Date(fecha + 'T12:00:00').getTime() - 7*86400000).toISOString().slice(0,10);
+    let cands = hist.filter(x=>x.fecha >= desde && x.fecha <= fecha);
+    const previa = hist.filter(x=>x.fecha < desde).slice(-1);
+    cands = previa.concat(cands);
+    if(!cands.length){ const t = await tasaDelDia(fecha); if(t) cands = [t]; }
+    const grupo = filas.filter(f=>!f.ya && f.m.fecha === fecha);
+    let mejor = null;
+    cands.forEach(t=>{
+      let n = 0, err = 0;
+      grupo.forEach(f=>{
+        const usd = f.bs / t.tasa;
+        const d = Math.min(...pool.map(p=>Math.abs(p.pend - usd) / p.pend));
+        if(d <= 0.01){ n++; err += d; }
+      });
+      const puntos = n * 1000 - err;
+      if(!mejor || puntos > mejor.puntos || (puntos === mejor.puntos && t.fecha > mejor.t.fecha)) mejor = {t, puntos, n};
+    });
+    tasas[fecha] = mejor ? {tasa: mejor.t.tasa, de: mejor.t.fecha, cuadran: mejor.n, total: grupo.length} : null;
+  }
+  const cn = {cuenta: cta, filas, pool, tasas};
+  cruzarCargaNomina(cn);
+  return cn;
+}
+
+// asigna cada transferencia a sus conceptos con la tasa elegida para su fecha
+function cruzarCargaNomina(cn){
+  const { filas, pool } = cn;
+  pool.forEach(p=>{ p.usado = false; });
+  filas.forEach(f=>{
+    const t = cn.tasas[f.m.fecha];
+    f.tasa = t ? t.tasa : null;
+    f.usd = t ? redondear2(f.bs / t.tasa) : null;
+    f.auto = null; f.opciones = []; f.elegida = ''; f.duda = '';
+  });
   const tol = x=>Math.max(0.10, x * 0.01);
   const tolVarios = x=>Math.max(0.05, x * 0.002);   // varios conceptos en una transferencia: más estricto
   const candidatos = f=>{
@@ -4248,7 +4288,6 @@ async function prepararCargaNomina(file){
       .forEach(p=>f.opciones.push({combo: [p], texto: etiqueta([p]), manual: true}));
     f.elegida = f.auto ? '0' : '';
   });
-  return {cuenta: cta, filas, pool};
 }
 
 function htmlCargaNomina(){
@@ -4275,8 +4314,12 @@ function htmlCargaNomina(){
   const n = cn.filas.filter(f=>!f.ya && f.elegida !== '').length;
   return '<div style="border:1px solid #d35400;border-radius:10px;padding:8px 12px;margin:6px 0 10px;background:var(--panel);">'
     + '<div style="font-weight:700;font-size:13px;">📥 Pagos de nómina en el estado de cuenta · ' + esc(cn.cuenta.nombre) + '</div>'
-    + '<div class="assumption" style="margin:4px 0 6px;">Cada transferencia se pasó a $ con la tasa BCV de su fecha y se cruzó con lo pendiente de la nómina. '
+    + '<div class="assumption" style="margin:4px 0 6px;">Cada transferencia se pasó a $ con la tasa fija de la nómina y se cruzó con lo pendiente. '
       + 'Las que tienen ✓ cuadran; revisa las que tienen ⚠️ y cambia lo que haga falta.</div>'
+    + Object.entries(cn.tasas).map(([fecha, t])=>'<div class="form-row" style="align-items:center;"><label>Tasa de lo procesado el ' + fechaCorta(fecha) + '</label>'
+        + '<span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;"><input type="number" step="0.0001" data-cn-tasa="' + fecha + '" value="' + (t ? t.tasa : '') + '" style="width:110px;">'
+        + '<span style="font-size:11px;color:var(--sub);">' + (!t ? 'sin tasa: escríbela' : t.manual ? 'escrita a mano' : 'BCV del ' + fechaCorta(t.de) + (t.de !== fecha ? ' (día anterior en que se cargó)' : ''))
+        + (t ? ' · cuadran ' + cn.filas.filter(f=>f.m.fecha === fecha && f.auto).length + ' de ' + cn.filas.filter(f=>f.m.fecha === fecha && !f.ya).length : '') + '</span></span></div>').join('')
     + (nomina.length ? nomina.map(fila).join('') : '<div class="empty">Ninguna transferencia del archivo cuadra con la nómina pendiente.</div>')
     + (otras.length ? '<details style="margin-top:6px;"><summary style="font-size:12px;color:var(--sub);">' + otras.length + ' salida(s) que no cuadran con la nómina (quedan en Banco)</summary>'
         + '<div class="assumption" style="margin:4px 0;">Si alguna es de la nómina (por ejemplo, se pagó con otra tasa), elige aquí su concepto.</div>'
@@ -4429,6 +4472,13 @@ function renderEgresosSeccion(body){
     cnPanel.querySelectorAll('[data-cn-op]').forEach(sel=>{ sel.onchange = ()=>{
       const f = cargaNomina.filas[Number(sel.dataset.cnOp)];
       f.elegida = sel.value; f.duda = sel.value === '0' ? f.duda : '';
+      pintarCarga();
+    }; });
+    cnPanel.querySelectorAll('[data-cn-tasa]').forEach(inp=>{ inp.onchange = ()=>{
+      const v = parseFloat(inp.value);
+      const fecha = inp.dataset.cnTasa;
+      cargaNomina.tasas[fecha] = v > 0 ? {tasa: v, de: fecha, manual: true} : null;
+      cruzarCargaNomina(cargaNomina);
       pintarCarga();
     }; });
     cnPanel.querySelector('#cnCancelar').onclick = ()=>{ cargaNomina = null; renderSidebar(); };
