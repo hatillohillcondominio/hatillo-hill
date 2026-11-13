@@ -3315,6 +3315,32 @@ async function cargarPrestamos(){
 }
 const pendientePrestamo = p=>Math.round((Number(p.saldo) - Number(p.en_nomina_abierta)) * 100) / 100;
 
+// v_prestamos solo da por descontado lo de nóminas cerradas. Con la nómina
+// abierta, la cuota de una quincena que ya se le pagó al trabajador también
+// está descontada (se le rebajó de esa transferencia).
+function quincenaPagada(nominaId, empId, q){
+  return egresosCache.some(e=>e.nomina_id === nominaId && (!e.empleado_id || e.empleado_id === empId) && e.tipo === (q === 1 ? 'nomina_q1' : 'nomina_q2'));
+}
+function aplicadoEnQuincenas(p){
+  let monto = 0; const dias = [];
+  nominaLineas.filter(l=>l.prestamo_id === p.id && l.aplica).forEach(l=>{
+    const [a, b] = partesQuincena(l);
+    if(a > 0.004 && quincenaPagada(l.nomina_id, l.empleado_id, 1)){ monto += a; dias.push('el 15'); }
+    if(b > 0.004 && quincenaPagada(l.nomina_id, l.empleado_id, 2)){ monto += b; dias.push('el 30'); }
+  });
+  return {monto: Math.round(monto * 100) / 100, dias};
+}
+// el préstamo con lo ya descontado en quincenas pagadas de la nómina abierta
+function prestamoAlDia(p){
+  const ap = aplicadoEnQuincenas(p);
+  return Object.assign({}, p, {
+    descontado: Number(p.descontado) + ap.monto,
+    en_nomina_abierta: Math.round((Number(p.en_nomina_abierta) - ap.monto) * 100) / 100,
+    saldo: Math.round((Number(p.saldo) - ap.monto) * 100) / 100,
+    aplicado_abierta: ap
+  });
+}
+
 // pone en la nómina abierta la cuota de cada préstamo que todavía no la tenga
 async function sincronizarPrestamosNomina(){
   if(!nominaMes || nominaMes.estado === 'cerrada') return 0;
@@ -3343,7 +3369,8 @@ async function sincronizarPrestamosNomina(){
 // bloque de préstamos dentro de la ficha del empleado
 function pintarPrestamosEmpleado(e, cont){
   if(!cont) return;
-  const lista = prestamosCache.filter(p=>p.empleado_id === e.id);
+  const lista = prestamosCache.filter(p=>p.empleado_id === e.id).map(prestamoAlDia);
+  const arranque = (cuentasBanco.find(c=>c.moneda === 'VES') || {}).fecha_saldo;
   const activos = lista.filter(p=>Number(p.saldo) > 0.005);
   const deuda = activos.reduce((s,p)=>s + Number(p.saldo), 0);
   cont.innerHTML = '<h4 style="margin:14px 0 6px;font-size:13px;">💸 Préstamos' + (deuda > 0.005 ? ' · debe ' + fmtMoney(deuda) : '') + '</h4>'
@@ -3351,9 +3378,12 @@ function pintarPrestamosEmpleado(e, cont){
         const saldado = Number(p.saldo) <= 0.005;
         return '<div class="comp-item" style="align-items:flex-start;"><span class="t">' + fechaCorta(p.fecha) + ' · ' + fmtMoney(Number(p.monto))
           + ' en ' + p.cuotas + ' cuota(s) de ' + fmtMoney(Number(p.cuota)) + ' (' + QUINCENAS[Number(p.quincena)||0].toLowerCase() + ')'
-          + '<br><span style="color:var(--sub);font-size:11px;">Descontado ' + fmtMoney(Number(p.descontado)) + ' en ' + p.cuotas_descontadas + ' nómina(s)'
-          + (Number(p.en_nomina_abierta) ? ' · ' + fmtMoney(Number(p.en_nomina_abierta)) + ' en la nómina abierta' : '')
-          + (p.entregado_el ? ' · entregado el ' + fechaCorta(p.entregado_el) : ' · entrega no registrada en Pagos')
+          + '<br><span style="color:var(--sub);font-size:11px;">Descontado ' + fmtMoney(Number(p.descontado))
+            + (Number(p.cuotas_descontadas) ? ' en ' + p.cuotas_descontadas + ' nómina(s) cerrada(s)' : '')
+            + (p.aplicado_abierta.monto ? (Number(p.cuotas_descontadas) ? ' + ' : ' · ') + fmtMoney(p.aplicado_abierta.monto) + ' en la quincena ya pagada (' + p.aplicado_abierta.dias.join(' y ') + ')' : '')
+          + (Number(p.en_nomina_abierta) > 0.004 ? ' · ' + fmtMoney(Number(p.en_nomina_abierta)) + ' por descontar en la nómina abierta' : '')
+          + (p.entregado_el ? ' · entregado el ' + fechaCorta(p.entregado_el)
+             : arranque && p.fecha <= arranque ? ' · entregado antes del saldo de arranque' : ' · entrega no registrada en Pagos')
           + (p.nota ? ' · ' + escHtml(p.nota) : '') + '</span></span>'
           + '<span style="text-align:right;white-space:nowrap;">' + (saldado ? '<b style="color:var(--green);">✓ pagado</b>' : 'debe <b>' + fmtMoney(Number(p.saldo)) + '</b>')
           + (puedeDinero() && !saldado ? '<br><button class="chip" data-prest-cuota="' + p.id + '" style="background:var(--panel2);padding:2px 8px;margin-top:3px;">✏️ Cuota</button>' : '')
