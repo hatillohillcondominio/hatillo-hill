@@ -2325,52 +2325,119 @@ const mismaReferencia = (a, b)=>{
   return x.length >= 4 && y.length >= 4 && x.slice(-6) === y.slice(-6);
 };
 
-// Lee el .xls que descarga la banca en linea del BNC (sirve tambien .xlsx o .csv
-// con columnas Fecha, Referencia, Debe, Haber y Saldo).
+// ---------- Lector de estados de cuenta ----------
+// Acepta los distintos reportes de la banca en línea (estado de cuenta, últimos
+// movimientos, movimientos en línea, movimientos entre fechas) y los de otros
+// bancos: .xls, .xlsx, .ods, .csv o .txt, en cualquier hoja del libro. Reconoce
+// las columnas por sus nombres habituales (Fecha, Referencia, Debe/Haber o un
+// solo Monto con signo, Saldo, Descripción...), cualquier formato de fecha y
+// montos con coma o punto decimal.
+const MESES_TXT = {ene:1,jan:1,feb:2,mar:3,abr:4,apr:4,may:5,jun:6,jul:7,ago:8,aug:8,sep:9,set:9,oct:10,nov:11,dic:12,dec:12};
+function fechaDeCelda(v){
+  const iso = (y, m, d)=>{
+    y = Number(y); m = Number(m); d = Number(d);
+    if(y < 100) y += 2000;
+    if(!(m >= 1 && m <= 12 && d >= 1 && d <= 31 && y > 1990 && y < 2200)) return '';
+    return y + '-' + String(m).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+  };
+  if(v instanceof Date && !isNaN(v)) return iso(v.getFullYear(), v.getMonth() + 1, v.getDate());
+  if(typeof v === 'number'){
+    // fecha de Excel (dias desde 1899-12-30)
+    if(v < 20000 || v > 90000) return '';
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(v) * 86400000);
+    return iso(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  }
+  const x = normTxt(v).replace(/\s+(a\s?las\s)?\d{1,2}:\d{2}.*$/, '').trim();   // sin la hora
+  let m;
+  if((m = x.match(/^(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})$/))) return iso(m[1], m[2], m[3]);
+  if((m = x.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/))){
+    // dia primero (Venezuela); si el segundo numero pasa de 12, viene mes/dia
+    return Number(m[2]) > 12 ? iso(m[3], m[1], m[2]) : iso(m[3], m[2], m[1]);
+  }
+  if((m = x.match(/^(\d{1,2})[\s\/.\-]+(?:de\s+)?([a-z]{3})[a-z]*\.?[\s\/.\-]+(?:de\s+)?(\d{2,4})$/)) && MESES_TXT[m[2]])
+    return iso(m[3], MESES_TXT[m[2]], m[1]);
+  if((m = x.match(/^(\d{4})(\d{2})(\d{2})$/))) return iso(m[1], m[2], m[3]);
+  return '';
+}
+function montoDeCelda(v){
+  if(typeof v === 'number') return v;
+  let x = String(v == null ? '' : v).trim();
+  if(!x) return 0;
+  let neg = /^\(.*\)$/.test(x) || /-\s*$/.test(x) || /^-/.test(x.replace(/^[^\d\-(]*/, ''));
+  x = x.replace(/[^\d.,]/g, '');
+  if(!x) return 0;
+  const pc = x.lastIndexOf(','), pp = x.lastIndexOf('.');
+  if(pc >= 0 && pp >= 0) x = pc > pp ? x.replace(/\./g, '').replace(',', '.') : x.replace(/,/g, '');
+  else if(pc >= 0) x = /,\d{1,2}$/.test(x) && (x.match(/,/g) || []).length === 1 ? x.replace(',', '.') : x.replace(/,/g, '');
+  else if(pp >= 0 && ((x.match(/\./g) || []).length > 1 || /\.\d{3}$/.test(x))) x = x.replace(/\./g, '');
+  const n = parseFloat(x) || 0;
+  return neg ? -n : n;
+}
+// que columna es cada encabezado
+function columnaDe(t){
+  if(!t) return null;
+  if(/^fecha/.test(t)) return 'fecha';
+  if(/^saldo/.test(t)) return 'saldo';
+  if(/tipo/.test(t) && /operac|transacc|movim/.test(t)) return 'oper';
+  if(/^(codigo|cod\.?)\b/.test(t)) return null;
+  if(/^(debe|debito|debitos|cargo|cargos|retiro|retiros|egreso|egresos|salida|salidas)\b/.test(t)) return 'debe';
+  if(/^(haber|credito|creditos|abono|abonos|deposito|depositos|ingreso|ingresos|entrada|entradas)\b/.test(t)) return 'haber';
+  if(/^(monto|importe|valor|cantidad)\b/.test(t)) return 'monto';
+  if(/^(ref|referencia|(n|no|nro|num|numero)[^a-z0-9]*\s*(de\s+)?(ref|referencia|operacion|documento|comprobante|transaccion)|documento|comprobante|serial|secuencia)/.test(t)) return 'ref';
+  if(/^(descrip|concepto|detalle|movimiento|transaccion|observ|beneficiario)/.test(t)) return 'desc';
+  return null;
+}
 async function leerEstadoCuenta(file){
-  const wb = XLSX.read(await file.arrayBuffer(), {type: 'array', cellDates: false});
-  const filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header: 1, raw: true, defval: ''});
-  const norm = s=>String(s).normalize('NFD').replace(/[̀-ͯ�]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-  let h = -1, col = {};
-  for(let i = 0; i < filas.length && h < 0; i++){
-    const f = filas[i].map(norm);
-    if(f.includes('debe') && f.includes('haber')){
-      h = i;
-      f.forEach((t, j)=>{
-        if(t === 'fecha') col.fecha = j;
-        else if(t.startsWith('referencia')) col.ref = j;
-        else if(t === 'debe') col.debe = j;
-        else if(t === 'haber') col.haber = j;
-        else if(t === 'saldo') col.saldo = j;
-        else if(t.startsWith('descrip')) col.desc = j;
-        else if(t.includes('tipo') && t.includes('operaci')) col.oper = j;
+  const wb = XLSX.read(await file.arrayBuffer(), {type: 'array', cellDates: true});
+  const movs = [];
+  let cuentaArchivo = null;
+  for(const hoja of wb.SheetNames){
+    const filas = XLSX.utils.sheet_to_json(wb.Sheets[hoja], {header: 1, raw: true, defval: ''});
+    // encabezado: la primera fila con Fecha y con Debe/Haber o Monto
+    let h = -1, col = {};
+    for(let i = 0; i < Math.min(filas.length, 80) && h < 0; i++){
+      const c = {};
+      (filas[i] || []).forEach((v, j)=>{ const k = columnaDe(normTxt(v)); if(k && c[k] === undefined) c[k] = j; });
+      if(c.fecha !== undefined && ((c.debe !== undefined && c.haber !== undefined) || c.monto !== undefined)){ h = i; col = c; }
+    }
+    if(h < 0) continue;
+    // la cuenta que dice el archivo (p. ej. "CUENTA CORRIENTE ***7859")
+    const cab = filas.slice(0, h).flat().map(String).join(' ');
+    cuentaArchivo = cuentaArchivo || ((cab.match(/\*{2,}\s*(\d{3,})/) || cab.match(/\b\d{16}(\d{4})\b/) || [])[1]) || null;
+    for(let i = h + 1; i < filas.length; i++){
+      const f = filas[i] || [];
+      const fecha = fechaDeCelda(f[col.fecha]);
+      if(!fecha) continue;   // totales, subtitulos, filas vacias
+      const desc = col.desc !== undefined ? String(f[col.desc]).replace(/\s+/g, ' ').trim() : '';
+      let ref = col.ref !== undefined ? f[col.ref] : '';
+      ref = typeof ref === 'number' ? String(Math.round(ref)) : String(ref).trim();
+      if(!ref){ const r = desc.match(/\bref(?:erencia)?\.?\s*:?\s*(\d{4,})/i); if(r) ref = r[1]; }
+      const monto = redondear2(col.monto !== undefined && (col.debe === undefined || col.haber === undefined)
+        ? montoDeCelda(f[col.monto])
+        : Math.abs(montoDeCelda(f[col.haber])) - Math.abs(montoDeCelda(f[col.debe])));
+      if(!monto) continue;
+      movs.push({
+        fecha, referencia: ref || null, monto,
+        saldo: col.saldo !== undefined && String(f[col.saldo]).trim() !== '' ? redondear2(montoDeCelda(f[col.saldo])) : null,
+        descripcion: desc.slice(0, 300) || 'Movimiento',
+        operacion: col.oper !== undefined ? String(f[col.oper]).replace(/\s+/g, ' ').trim() || null : null
       });
     }
   }
-  if(h < 0 || col.fecha === undefined || col.debe === undefined || col.haber === undefined)
-    throw new Error('No encontré las columnas Fecha, Debe y Haber. ¿Es el estado de cuenta del BNC?');
-  // la cuenta que dice el archivo (p. ej. "CUENTA CORRIENTE ***7859")
-  const cuentaArchivo = ((filas.slice(0, h).flat().map(String).join(' ').match(/\*{2,}(\d{3,})/) || [])[1]) || null;
-  const num = v=>typeof v === 'number' ? v : parseFloat(String(v).replace(/\./g, '').replace(',', '.')) || 0;
-  const movs = [];
-  for(let i = h + 1; i < filas.length; i++){
-    const f = filas[i];
-    let fecha = f[col.fecha];
-    if(typeof fecha === 'number'){ const d = XLSX.SSF.parse_date_code(fecha); fecha = d ? d.y + '-' + String(d.m).padStart(2,'0') + '-' + String(d.d).padStart(2,'0') : ''; }
-    else {
-      const m = String(fecha).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-      fecha = m ? m[3] + '-' + m[2].padStart(2,'0') + '-' + m[1].padStart(2,'0') : '';
-    }
-    if(!fecha) continue;
-    let ref = col.ref !== undefined ? f[col.ref] : '';
-    ref = typeof ref === 'number' ? String(Math.round(ref)) : String(ref).trim();
-    const monto = redondear2(num(f[col.haber]) - num(f[col.debe]));
-    if(!monto) continue;
-    movs.push({
-      fecha, referencia: ref || null, monto,
-      saldo: col.saldo !== undefined && f[col.saldo] !== '' ? redondear2(num(f[col.saldo])) : null,
-      descripcion: (col.desc !== undefined ? String(f[col.desc]).replace(/\s+/g, ' ').trim() : '').slice(0, 300) || 'Movimiento',
-      operacion: col.oper !== undefined ? String(f[col.oper]).replace(/\s+/g, ' ').trim() || null : null
+  if(!movs.length)
+    throw new Error('No encontré movimientos en ' + file.name + ': hace falta una columna de Fecha y otra de Debe/Haber o Monto.');
+  return {movs, cuentaArchivo};
+}
+// varios archivos a la vez: se juntan y lo repetido (misma fecha, referencia y monto) se cuenta una vez
+async function leerEstadosCuenta(files){
+  const vistos = new Set(), movs = [];
+  let cuentaArchivo = null;
+  for(const file of Array.from(files)){
+    const r = await leerEstadoCuenta(file);
+    cuentaArchivo = cuentaArchivo || r.cuentaArchivo;
+    r.movs.forEach(m=>{
+      const k = m.fecha + '|' + (m.referencia || '') + '|' + m.monto.toFixed(2) + '|' + (m.referencia ? '' : m.descripcion);
+      if(!vistos.has(k)){ vistos.add(k); movs.push(m); }
     });
   }
   return {movs, cuentaArchivo};
@@ -2499,7 +2566,7 @@ function renderBancoSeccion(body){
     + '<div class="comp-item"><span class="t">Movimientos sin conciliar</span><span' + (sinConciliar.length ? ' style="color:var(--amber);"' : '') + '>' + sinConciliar.length + '</span></div>'
     + '<div style="display:flex;gap:6px;margin-top:8px;">'
       + '<label class="chip" style="background:var(--accent);color:#fff;flex:1;text-align:center;cursor:pointer;">📥 Cargar estado de cuenta'
-        + '<input type="file" id="bcArchivo" accept=".xls,.xlsx,.csv" style="display:none;"></label>'
+        + '<input type="file" id="bcArchivo" accept=".xls,.xlsx,.ods,.csv,.txt" multiple style="display:none;"></label>'
       + (sinConciliar.length ? '<button class="chip" id="bcAuto" style="background:var(--green);color:#fff;flex:1;">⚡ Conciliar lo seguro</button>' : '')
     + '</div>'
     + '<div id="bcAviso" class="assumption">Descarga en la banca en línea los movimientos de la cuenta (Excel) y cárgalos aquí. '
@@ -2510,11 +2577,11 @@ function renderBancoSeccion(body){
   const aviso = document.getElementById('bcAviso');
 
   document.getElementById('bcArchivo').onchange = async e=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    aviso.textContent = 'Leyendo ' + file.name + '…';
+    const files = e.target.files;
+    if(!files || !files.length) return;
+    aviso.textContent = 'Leyendo ' + Array.from(files).map(f=>f.name).join(', ') + '…';
     try{
-      const { movs, cuentaArchivo } = await leerEstadoCuenta(file);
+      const { movs, cuentaArchivo } = await leerEstadosCuenta(files);
       if(cuentaArchivo && c.numero && !soloDigitos(c.numero).endsWith(cuentaArchivo)
          && !confirm('El archivo es de la cuenta ***' + cuentaArchivo + ' y la elegida es ' + c.nombre + ' (' + c.numero + ').\n\n¿Cargarlo igual en ' + c.nombre + '?')){
         aviso.textContent = 'No se cargó nada.'; return;
@@ -4139,8 +4206,8 @@ function afinidad(motivo, concepto, tipo){
 }
 function nombreEmpleado(id){ const e = empleadosCache.find(x=>x.id === id); return e ? e.nombre : 'empleado'; }
 
-async function prepararCargaNomina(file){
-  const { movs, cuentaArchivo } = await leerEstadoCuenta(file);
+async function prepararCargaNomina(files){
+  const { movs, cuentaArchivo } = await leerEstadosCuenta(files);
   const cta = cuentasBanco.find(c=>cuentaArchivo && c.numero && soloDigitos(c.numero).endsWith(cuentaArchivo))
            || cuentasBanco.find(c=>c.moneda === 'VES');
   if(!cta) throw new Error('No hay una cuenta en Bs registrada en Banco.');
@@ -4427,8 +4494,8 @@ function renderEgresosSeccion(body){
     '<div class="presuControl"><span>Por pagar (todos los meses)</span><b style="color:' + (totalPend > 0.005 ? '#d35400' : 'var(--green)') + ';">' + fmtMoney(totalPend) + '</b></div>'
     + (puedeDinero() && hayNomina && !cargaNomina
         ? '<label class="chip" style="display:block;background:var(--accent);color:#fff;text-align:center;cursor:pointer;padding:9px;margin:6px 0;">📥 Cargar pagos de nómina desde el estado de cuenta'
-          + '<input type="file" id="cnArchivo" accept=".xls,.xlsx,.csv" style="display:none;"></label>'
-          + '<div id="cnAviso" class="assumption" style="margin:0 0 6px;">Cada concepto va en su propia transferencia: baja el Excel del BNC y se registran todas de una vez, ya conciliadas.</div>'
+          + '<input type="file" id="cnArchivo" accept=".xls,.xlsx,.ods,.csv,.txt" multiple style="display:none;"></label>'
+          + '<div id="cnAviso" class="assumption" style="margin:0 0 6px;">Cada concepto va en su propia transferencia: adjunta el estado de cuenta (Excel, CSV; uno o varios archivos) y se registran todas de una vez, ya conciliadas.</div>'
         : '')
     + '<div id="cnPanel"></div>'
     + (porPagar.length
@@ -4455,11 +4522,11 @@ function renderEgresosSeccion(body){
   // carga de la nómina desde el estado de cuenta
   const cnArchivo = sec.querySelector('#cnArchivo');
   if(cnArchivo) cnArchivo.onchange = async e=>{
-    const file = e.target.files[0];
-    if(!file) return;
+    const files = e.target.files;
+    if(!files || !files.length) return;
     const av = sec.querySelector('#cnAviso');
-    av.textContent = 'Leyendo ' + file.name + ' y buscando la tasa de cada día…';
-    try{ cargaNomina = await prepararCargaNomina(file); egresoAbierto = null; renderSidebar(); }
+    av.textContent = 'Leyendo ' + Array.from(files).map(f=>f.name).join(', ') + ' y buscando la tasa de cada día…';
+    try{ cargaNomina = await prepararCargaNomina(files); egresoAbierto = null; renderSidebar(); }
     catch(err){ av.style.color = 'var(--red)'; av.textContent = 'No se pudo cargar: ' + err.message; e.target.value = ''; }
   };
   const cnPanel = sec.querySelector('#cnPanel');
