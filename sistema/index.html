@@ -475,6 +475,9 @@ const PLANTILLAS_WA_EXTRA = [
   {clave: 'whatsapp_tpl_pago_nomina', nombre: 'Recibo de pago a un empleado (nómina)',
    vars: '{nombre}, {quincena} (ej. "15 de noviembre de 2026"), {detalle} (cada concepto en su línea), {total}, {bs} (sale como " (Bs X)" si hay tasa), {forma}, {fecha}',
    defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Se le pagó la quincena del {quincena}.\n\nRecibo de pago:\n{detalle}\n\nTotal pagado: ${total}{bs}\nForma de pago: {forma}, el {fecha}.\n\nGracias por su trabajo.'},
+  {clave: 'whatsapp_tpl_pago_recibido', nombre: 'Pago de condominio recibido (al propietario)',
+   vars: '{nombre}, {id}, {monto}, {bs} (sale como " (Bs X)" si pagó en bolívares), {forma}, {referencia} (sale como ", ref. 123" si hay), {fecha}, {saldo} (queda al día / saldo pendiente / saldo a favor), {portal}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Recibimos su pago de ${monto}{bs} del apartamento {id} ({forma}{referencia}, el {fecha}).\n\n{saldo}\n\nPuede ver el detalle en el portal: {portal}\n\nGracias.'},
   {clave: 'whatsapp_tpl_acceso_nuevo', nombre: 'Acceso nuevo al portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
    defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le creamos su acceso al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'},
   {clave: 'whatsapp_tpl_acceso_clave', nombre: 'Clave nueva del portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
@@ -1571,6 +1574,69 @@ function sendWhatsAppToApt(apt, buildMsg, afterSend){
   const doSend = (opt)=>{ openWhatsApp(opt.telefono, buildMsg(), apt); if(afterSend) afterSend(true); };
   if(options.length===1){ doSend(options[0]); return; }
   showContactPicker(options, doSend);
+}
+// ----- aviso al propietario de un pago de condominio recibido -----
+// Igual que el recibo de nomina: al registrar o confirmar un cobro aparece una caja
+// fija abajo con un boton por pago; cada uno abre WhatsApp con el mensaje listo.
+// El saldo a favor se consulta al agregar el aviso (despues de aplicar el pago) y la
+// deuda se lee al tocar el boton, sin esperas, para que el navegador no bloquee WhatsApp.
+let avisosCobro = [];   // [{pago_id, apartamento_id, monto, monto_bs, forma_pago, referencia, fecha, favor, enviado}]
+async function avisarCobro(p){
+  if(!p || !p.apartamento_id) return;
+  if(p.pago_id && avisosCobro.some(a=>a.pago_id === p.pago_id)) return;
+  const av = Object.assign({enviado:false, favor:0}, p);
+  try{
+    const { data } = await db.from('v_saldo_favor').select('a_favor').eq('apartamento_id', p.apartamento_id).maybeSingle();
+    av.favor = Number(data && data.a_favor) || 0;
+  }catch(e){}
+  avisosCobro.push(av);
+  pintarAvisosCobro();
+}
+function mensajePagoRecibido(av, apt){
+  const d = findDeuda(apt);
+  const debe = d ? Number(d.monto) || 0 : 0;
+  const saldo = debe > 0.005 ? 'Saldo pendiente: $' + debe.toFixed(2) + '.'
+    : av.favor > 0.005 ? 'Su apartamento queda al día, con un saldo a favor de $' + av.favor.toFixed(2) + ' que se aplicará a su próximo recibo.'
+    : 'Su apartamento queda al día.';
+  return fillTemplate(plantillaWA('whatsapp_tpl_pago_recibido'), {
+    nombre: apt.propietario || '', id: apt.id, monto: Number(av.monto).toFixed(2),
+    bs: Number(av.monto_bs) > 0 ? ' (' + fmtBs(Number(av.monto_bs)) + ')' : '',
+    forma: av.forma_pago || '', referencia: av.referencia ? ', ref. ' + av.referencia : '',
+    fecha: fechaCorta(av.fecha || new Date().toISOString().slice(0,10)),
+    saldo, portal: new URL('portal.html', location.href).href
+  });
+}
+function pintarAvisosCobro(){
+  let caja = document.getElementById('avisoCobros');
+  if(!avisosCobro.length){ if(caja) caja.remove(); return; }
+  if(!caja){
+    caja = document.createElement('div');
+    caja.id = 'avisoCobros';
+    caja.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:150;max-width:min(360px,calc(100vw - 32px));'
+      + 'background:var(--panel);border:1px solid var(--green);border-radius:12px;padding:10px 12px;box-shadow:0 6px 24px rgba(0,0,0,.35);';
+    document.body.appendChild(caja);
+  }
+  caja.innerHTML = '<div style="font-weight:700;font-size:13px;">📲 Avisa al propietario que se recibió su pago</div>'
+    + '<div class="assumption" style="margin:4px 0 6px;">Cada botón abre WhatsApp con el mensaje listo: lo que pagó y cómo queda su saldo.</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+    + avisosCobro.map((a, i)=>{
+        const apt = apartments.find(x=>normalizeId(x.id) === normalizeId(a.apartamento_id));
+        const tel = apt && getContactOptions(apt).length > 0;
+        return '<button class="chip" data-aviso-cobro="' + i + '" style="background:var(--green);color:#fff;' + (a.enviado ? 'opacity:.55;' : '') + '"'
+          + (tel ? '' : ' title="Sin teléfono: agrégalo en la ficha del apartamento (Datos)"') + '>📲 ' + esc(a.apartamento_id)
+          + ' · ' + fmtMoney(Number(a.monto)) + (tel ? '' : ' ⚠️') + '</button>';
+      }).join('')
+    + '<button class="chip" id="avisoCobrosListo" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);">Listo</button></div>';
+  caja.querySelectorAll('[data-aviso-cobro]').forEach(b=>{
+    b.onclick = ()=>{
+      const av = avisosCobro[Number(b.dataset.avisoCobro)];
+      const apt = apartments.find(x=>normalizeId(x.id) === normalizeId(av.apartamento_id));
+      if(!apt){ alert('No encontré el apartamento ' + av.apartamento_id + '.'); return; }
+      if(!getContactOptions(apt).length){ alert(apt.id + ' no tiene un teléfono válido. Agrégalo en la ficha del apartamento (Datos).'); return; }
+      sendWhatsAppToApt(apt, ()=>mensajePagoRecibido(av, apt), ()=>{ av.enviado = true; b.style.opacity = '.55'; });
+    };
+  });
+  caja.querySelector('#avisoCobrosListo').onclick = ()=>{ avisosCobro = []; pintarAvisosCobro(); };
 }
 function diasDesdeEnvio(apt){
   if(!apt.ultimo_envio) return Infinity;
@@ -2760,6 +2826,8 @@ function renderBancoSeccion(body){
       if(error){ e.target.disabled = false; alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
       await conciliar(mov.id, {pago_id: data.id});
       await recargarDeuda();
+      avisarCobro({pago_id: data.id, apartamento_id: apto, monto: usd, monto_bs: enBs ? Number(mov.monto) : null,
+        forma_pago: enBs ? 'Transferencia Bs' : 'Depósito en cuenta $', referencia: mov.referencia || null, fecha: mov.fecha});
     };
   }; });
 }
@@ -5497,7 +5565,7 @@ function renderCuentasCompleto(body){
     const ok = await validarPagoCondominio(document.getElementById('pApt').value, monto,
       document.getElementById('pFecha').value, document.getElementById('pRef').value);
     if(!ok){ btn.disabled = false; return; }
-    const { error } = await db.from('pagos').insert({
+    const fila = {
       apartamento_id: document.getElementById('pApt').value,
       fecha: document.getElementById('pFecha').value || null,
       monto: monto,
@@ -5510,7 +5578,8 @@ function renderCuentasCompleto(body){
       registrado_por: miPerfil.id,
       confirmado_por: miPerfil.id,
       confirmado_en: new Date().toISOString()
-    });
+    };
+    const { data: nuevo, error } = await db.from('pagos').insert(fila).select('id').single();
     btn.disabled = false;
     if(error){ alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
     document.getElementById('pMonto').value = '';
@@ -5518,6 +5587,8 @@ function renderCuentasCompleto(body){
     document.getElementById('pRef').value = '';
     await refrescarCuentas();
     await recargarDeuda();
+    avisarCobro({pago_id: nuevo && nuevo.id, apartamento_id: fila.apartamento_id, monto: fila.monto, monto_bs: fila.monto_bs,
+      forma_pago: fila.forma_pago, referencia: fila.referencia, fecha: fila.fecha});
   };
 
   renderEgresosSeccion(body);
@@ -5636,6 +5707,8 @@ function renderReportadosSeccion(body){
       estado: 'confirmado', confirmado_por: miPerfil.id, confirmado_en: new Date().toISOString()
     }).eq('id', p.id).eq('estado', 'reportado');
     if(error){ b.disabled = false; alert('No se pudo confirmar: ' + error.message); return; }
+    avisarCobro({pago_id: p.id, apartamento_id: p.apartamento_id, monto: p.monto, monto_bs: p.monto_bs,
+      forma_pago: p.forma_pago, referencia: p.referencia, fecha: p.fecha});
     await refrescarCuentas();
     await recargarDeuda();
   }; });
@@ -7610,7 +7683,7 @@ function renderFichaPago(pane){
     const ok = await validarPagoCondominio(apt.id, monto,
       document.getElementById('fpFecha').value, document.getElementById('fpRef').value);
     if(!ok){ btn.disabled = false; btn.textContent = '💵 Registrar pago'; return; }
-    const { error } = await db.from('pagos').insert({
+    const fila = {
       apartamento_id: apt.id,
       fecha: document.getElementById('fpFecha').value || null,
       monto: monto,
@@ -7623,11 +7696,14 @@ function renderFichaPago(pane){
       registrado_por: miPerfil.id,
       confirmado_por: miPerfil.id,
       confirmado_en: new Date().toISOString()
-    });
+    };
+    const { data: nuevo, error } = await db.from('pagos').insert(fila).select('id').single();
     if(error){ btn.disabled = false; btn.textContent = '💵 Registrar pago'; alert('No se pudo registrar el pago: ' + traducirErrorPago(error.message)); return; }
     await recargarDeuda();
     await refrescarTrasMovimiento();
     irAFichaTab('resumen');
+    avisarCobro({pago_id: nuevo && nuevo.id, apartamento_id: fila.apartamento_id, monto: fila.monto, monto_bs: fila.monto_bs,
+      forma_pago: fila.forma_pago, referencia: fila.referencia, fecha: fila.fecha});
   };
 }
 
