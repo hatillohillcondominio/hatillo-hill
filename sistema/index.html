@@ -6062,8 +6062,27 @@ function renderUsuariosSeccion(body){
     + '<textarea id="usDatosPago" style="width:100%;min-height:90px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px;font-size:12.5px;" placeholder="Banco, cuenta, RIF, pago móvil…">Cargando…</textarea>'
     + '<button class="chip" id="usGuardarDatos" style="background:var(--accent);color:#fff;width:100%;margin-top:6px;">Guardar</button>'
     + '<div class="assumption">Aparece en el portal arriba del botón “Reportar un pago”. Vacío, no se muestra.</div></details>')
+    + '<div style="position:relative;margin-top:14px;"><input type="search" id="usBuscar" placeholder="🔍 Buscar por apartamento, nombre, correo o rol…" autocomplete="off"'
+    + ' style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 10px;font-size:13px;"></div>'
     + '<div id="usLista"><div class="empty" style="padding:10px;">Cargando usuarios…</div></div>';
   body.appendChild(sec);
+
+  // buscador: filtra tarjetas y apartamentos sin usuario, sin volver a pedir datos
+  const normBuscar = s=>String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const inpBuscar = sec.querySelector('#usBuscar');
+  const filtrarUsuarios = ()=>{
+    const q = normBuscar(inpBuscar.value);
+    const partes = q ? q.split(' ') : [];
+    let vistos = 0;
+    sec.querySelectorAll('#usLista [data-buscar]').forEach(el=>{
+      const ok = partes.every(t=>el.dataset.buscar.includes(t));
+      el.style.display = ok ? '' : 'none';
+      if(ok && el.classList.contains('usCard')) vistos++;
+    });
+    const nada = sec.querySelector('#usSinResultados');
+    if(nada) nada.style.display = q && !vistos ? '' : 'none';
+  };
+  inpBuscar.oninput = filtrarUsuarios;
 
   const txtDatos = sec.querySelector('#usDatosPago');
   if(txtDatos) db.from('configuracion').select('valor').eq('clave', 'datos_pago_portal').maybeSingle()
@@ -6129,6 +6148,18 @@ function renderUsuariosSeccion(body){
   };
 
   const etiquetas = {admin:'Administrador', junta:'Junta', tesorero:'Tesorero', vecino:'Vecino'};
+  // la cuenta de un vecino va con su apartamento: el nombre que vale es el de la ficha.
+  // perfiles.nombre se congeló al crear la cuenta; si la ficha cambió de dueño, hay que pasarla.
+  const fichaDe = p=>p.rol === 'vecino' && p.apartamento_id ? apartments.find(x=>x.id===p.apartamento_id) : null;
+  const correoFicha = a=>a ? ((a.correo || '').split(/[;,\s]+/)[0] || '').toLowerCase() : '';
+  const otroDueno = p=>{
+    const a = fichaDe(p);
+    if(!a || !a.propietario) return false;
+    const f = normBuscar(a.propietario), n = normBuscar(p.nombre);
+    if(!n || n.includes('@')) return true;
+    return !f.includes(n) && !n.includes(f);
+  };
+  const nombreUsuario = p=>{ const a = fichaDe(p); return (a && a.propietario) || p.nombre || ''; };
   async function pintarLista(){
     const host = sec.querySelector('#usLista');
     const { data, error } = await db.from('perfiles').select('*').order('rol').order('apartamento_id').order('correo');
@@ -6143,17 +6174,22 @@ function renderUsuariosSeccion(body){
     selApt.innerHTML = '<option value="">— elegir —</option>' + ordenados.filter(a=>!conCuenta.has(a.id))
       .map(a=>'<option value="'+escHtml(a.id)+'">'+escHtml(a.id)+' · '+escHtml(a.propietario||'')+'</option>').join('');
     if(valorApt && !conCuenta.has(valorApt)) selApt.value = valorApt;
+    const cambiados = perfiles.filter(p=>otroDueno(p));
     host.innerHTML = '<h3 class="section" style="margin-top:14px;">Usuarios (' + perfiles.length + ')</h3>'
+      + (cambiados.length ? '<div class="assumption" style="margin-top:0;color:var(--amber);"><b>' + cambiados.length
+          + (cambiados.length === 1 ? ' cuenta de vecino sigue' : ' cuentas de vecino siguen') + ' a nombre del propietario anterior</b> ('
+          + cambiados.map(p=>escHtml(p.apartamento_id)).join(', ') + '). Usa “🔗 Pasar al propietario actual” en su tarjeta.</div>' : '')
       + (faltan.length
           ? '<div class="assumption" style="margin-top:0;"><b>Faltan ' + faltan.length + ' de ' + apartments.length + ' apartamentos por tener usuario activo.</b> Toca uno para crearle su usuario:</div>'
             + '<div style="display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 10px;">' + faltan.map(a=>{
                 const inactivo = conCuenta.has(a.id);
-                return '<button class="chip" data-us-falta="' + escHtml(a.id) + '" style="background:var(--panel2);font-size:12px;" title="' + escHtml(a.propietario || '') + '">'
+                return '<button class="chip" data-us-falta="' + escHtml(a.id) + '" data-buscar="' + escHtml(normBuscar(a.id + ' ' + (a.propietario || '') + ' ' + (a.correo || ''))) + '" style="background:var(--panel2);font-size:12px;" title="' + escHtml(a.propietario || '') + '">'
                   + escHtml(a.id) + ' · ' + escHtml((a.propietario || '').split(' ').slice(0,2).join(' ')) + (inactivo ? ' <span style="color:var(--red);">(inactivo)</span>' : '') + '</button>';
               }).join('') + '</div>'
           : '<div class="assumption" style="margin-top:0;color:var(--green);">✓ Todos los apartamentos tienen usuario activo.</div>')
-      + perfiles.map(p=>'<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:5px;' + (p.activo ? '' : 'opacity:.6;') + '">'
-          + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + escHtml(p.nombre || '') + '</span>'
+      + '<div id="usSinResultados" class="empty" style="display:none;padding:10px;">Ningún usuario coincide con la búsqueda.</div>'
+      + perfiles.map(p=>'<div class="comp-item usCard" data-buscar="' + escHtml(normBuscar([p.apartamento_id, nombreUsuario(p), p.nombre, p.correo, etiquetas[p.rol] || p.rol, p.activo ? 'activo' : 'inactivo'].join(' '))) + '" style="flex-direction:column;align-items:stretch;gap:5px;' + (p.activo ? '' : 'opacity:.6;') + '">'
+          + '<div style="display:flex;justify-content:space-between;gap:8px;"><span class="t"><b>' + escHtml(p.apartamento_id || etiquetas[p.rol] || p.rol) + '</b> · ' + escHtml(nombreUsuario(p)) + '</span>'
           + '<span style="font-size:11px;font-weight:700;color:' + (p.activo ? 'var(--green)' : 'var(--red)') + ';">' + (p.activo ? 'activo' : 'inactivo') + '</span></div>'
           + '<div style="font-size:12px;color:var(--sub);">' + escHtml(p.correo) + ' · ' + escHtml(etiquetas[p.rol] || p.rol) + '</div>'
           + (p.id === miPerfil.id || p.rol === 'vecino' || !asignables.includes(p.rol) ? '' : '<div class="form-row" style="margin:0;"><label>Rol</label><select data-us-rol="' + p.id + '">'
@@ -6164,13 +6200,48 @@ function renderUsuariosSeccion(body){
             + '<button class="chip" data-us-correo="' + p.id + '" style="background:var(--panel2);flex:1;">✉️ Cambiar correo</button>'
             + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>')
           + (() => {
+              const puedeTocar = asignables.includes(p.rol) && p.id !== miPerfil.id;
+              // cambio de dueño: la cuenta quedó a nombre del anterior
+              if(otroDueno(p)) return '<div class="assumption" style="margin:0;color:var(--amber);">La cuenta se creó para <b>' + escHtml(p.nombre || p.correo)
+                + '</b>, pero la ficha dice que el propietario ahora es <b>' + escHtml(fichaDe(p).propietario) + '</b>.</div>'
+                + (puedeTocar ? '<button class="chip" data-us-pasar="' + p.id + '" style="background:var(--amber);color:#fff;width:100%;">🔗 Pasar al propietario actual</button>' : '');
               // aviso si el correo de la ficha ya no es el de la cuenta
-              const a = p.apartamento_id && apartments.find(x=>x.id===p.apartamento_id);
-              const fc = a ? ((a.correo || '').split(/[;,\s]+/)[0] || '').toLowerCase() : '';
-              return fc && fc !== String(p.correo || '').toLowerCase() && asignables.includes(p.rol) && p.id !== miPerfil.id
+              const fc = correoFicha(fichaDe(p));
+              return fc && fc !== String(p.correo || '').toLowerCase() && puedeTocar
                 ? '<div class="assumption" style="margin:0;color:var(--amber);">La ficha tiene otro correo: ' + escHtml(fc) + '. Con “✉️ Cambiar correo” puedes pasarlo a la cuenta.</div>' : '';
             })()
           + '<div data-us-res="' + p.id + '"></div></div>').join('');
+    filtrarUsuarios();
+
+    host.querySelectorAll('[data-us-pasar]').forEach(b=>{ b.onclick = async ()=>{
+      const p = perfiles.find(x=>x.id===b.dataset.usPasar);
+      const a = fichaDe(p);
+      if(!a) return;
+      const nombre = a.propietario;
+      let correo = correoFicha(a) || String(p.correo || '').toLowerCase();
+      correo = (prompt('Pasar la cuenta de ' + p.apartamento_id + ' a ' + nombre + '.\n\nCorreo con el que entrará el propietario actual:', correo) || '').trim().toLowerCase();
+      if(!correo) return;
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo)){ alert('Ese correo no es válido.'); return; }
+      const cambiaCorreo = correo !== String(p.correo || '').toLowerCase();
+      if(!confirm('¿Pasar la cuenta de ' + p.apartamento_id + ' al propietario actual?\n\n'
+        + '• Nombre: ' + (p.nombre || '—') + ' → ' + nombre + '\n'
+        + '• Correo: ' + (cambiaCorreo ? p.correo + ' → ' + correo : correo + ' (sin cambio)') + '\n'
+        + '• Clave: se le asigna una nueva, para que el dueño anterior ya no pueda entrar.\n\n'
+        + 'Los recibos y pagos del apartamento se quedan donde están: van con el apartamento, no con la persona.')) return;
+      b.disabled = true; b.textContent = 'Pasando…';
+      try{
+        if(cambiaCorreo) await llamarUsuarios({ accion: 'correo', id: p.id, correo });
+        const { data: hecho, error } = await db.from('perfiles').update({ nombre }).eq('id', p.id).select('id');
+        if(error || !(hecho || []).length) throw new Error('no se pudo poner el nombre' + (error ? ': ' + error.message : ' (sin permiso)'));
+        const clave = claveTemporal();
+        await llamarUsuarios({ accion: 'clave', id: p.id, clave });
+        await pintarLista();
+        ofrecerWhatsApp(host.querySelector('[data-us-res="' + p.id + '"]'), p.apartamento_id, nombre, correo, clave, true, '✓ Cuenta pasada a ' + nombre);
+      }catch(e){
+        alert('No se pudo completar el traspaso: ' + (e.message||e) + '\n\nRevisa la tarjeta: algún paso pudo quedar hecho.');
+        await pintarLista();
+      }
+    }; });
 
     host.querySelectorAll('[data-us-falta]').forEach(b=>{ b.onclick = ()=>{
       const id = b.dataset.usFalta;
@@ -6230,7 +6301,7 @@ function renderUsuariosSeccion(body){
       b.disabled = true;
       try{
         await llamarUsuarios({ accion: 'clave', id: p.id, clave });
-        ofrecerWhatsApp(host.querySelector('[data-us-res="' + p.id + '"]'), p.apartamento_id, p.nombre, p.correo, clave, false, '✓ Clave nueva asignada');
+        ofrecerWhatsApp(host.querySelector('[data-us-res="' + p.id + '"]'), p.apartamento_id, nombreUsuario(p), p.correo, clave, false, '✓ Clave nueva asignada');
       }catch(e){ alert('No se pudo cambiar la clave: ' + (e.message||e)); }
       b.disabled = false;
     }; });
