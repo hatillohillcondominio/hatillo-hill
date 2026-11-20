@@ -1801,6 +1801,8 @@ async function avisarCobro(p){
   if(!p || !p.apartamento_id) return;
   if(p.pago_id && avisosCobro.some(a=>a.pago_id === p.pago_id)) return;
   const av = Object.assign({enviado:false, favor:0}, p);
+  // la deuda en memoria puede ser la de antes del pago: se recarga antes de mostrar el boton
+  try{ await recargarDeuda(); }catch(e){ console.error(e); }
   try{
     const { data } = await db.from('v_saldo_favor').select('a_favor').eq('apartamento_id', p.apartamento_id).maybeSingle();
     av.favor = Number(data && data.a_favor) || 0;
@@ -6228,10 +6230,10 @@ function renderReportadosSeccion(body){
       estado: 'confirmado', confirmado_por: miPerfil.id, confirmado_en: new Date().toISOString()
     }).eq('id', p.id).eq('estado', 'reportado');
     if(error){ b.disabled = false; alert('No se pudo confirmar: ' + error.message); return; }
-    avisarCobro({pago_id: p.id, apartamento_id: p.apartamento_id, monto: p.monto, monto_bs: p.monto_bs,
-      forma_pago: p.forma_pago, referencia: p.referencia, fecha: p.fecha});
     await refrescarCuentas();
     await recargarDeuda();
+    avisarCobro({pago_id: p.id, apartamento_id: p.apartamento_id, monto: p.monto, monto_bs: p.monto_bs,
+      forma_pago: p.forma_pago, referencia: p.referencia, fecha: p.fecha});
   }; });
   // corregir lo que el vecino escribio mal antes de confirmarlo
   sec.querySelectorAll('[data-rep-ed]').forEach(b=>{ b.onclick = ()=>{
