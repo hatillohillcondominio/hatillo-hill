@@ -90,6 +90,9 @@
 
   .searchbox{width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:13px;margin-bottom:12px;}
   .searchbox:focus{outline:none;border-color:var(--accent);}
+  .buscaOculto{display:none !important;}
+  .form-row input.buscaSelect, input.buscaSelect{flex:0 1 110px;min-width:70px;max-width:130px;text-align:left;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:12px;padding:4px 7px;border-radius:7px;}
+  input.buscaSelect:focus{outline:none;border-color:var(--accent);}
 
   h3.section{font-size:12.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--text);margin:0 0 8px 0;font-weight:800;}
   /* subtitulos desplegables (Agregar un empleado, Pegar el estado de cuenta...): en negrita, no tenues */
@@ -485,7 +488,9 @@ const PLANTILLAS_WA_EXTRA = [
   {clave: 'whatsapp_tpl_acceso_nuevo', nombre: 'Acceso nuevo al portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
    defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le creamos su acceso al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'},
   {clave: 'whatsapp_tpl_acceso_clave', nombre: 'Clave nueva del portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
-   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le asignamos una clave nueva para el portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'}
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le asignamos una clave nueva para el portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'},
+  {clave: 'whatsapp_tpl_acceso_recordar', nombre: 'Reenviar el acceso al portal (misma clave)', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le recordamos sus datos para entrar al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nSu clave es la misma de siempre; si la olvida, pídala a la Junta. Gracias.'}
 ];
 let plantillasWA = {};
 function plantillaWA(clave){
@@ -652,6 +657,136 @@ function soloLectura(el){
   aplicar();
   new MutationObserver(aplicar).observe(el, {childList: true, subtree: true});
 }
+
+// ---------- buscadores automáticos ----------
+// Toda lista de 6 o más tarjetas (.comp-item) o filas de tabla, y todo selector de
+// 15 o más opciones (los de apartamentos), recibe un buscador sin tocar cada pantalla.
+// Las listas que ya traen su propio buscador (.searchbox / type=search) se respetan.
+const BUSCA_MIN_LISTA = 6, BUSCA_MIN_SELECT = 15;
+function buscaNorm(s){
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+const buscaCompacto = s=>s.replace(/[^a-z0-9ñ]/g, '');
+// cada palabra debe aparecer; "apb2" encuentra "A-PB-2" y "perez" encuentra "Pérez"
+function buscaCoincide(texto, q){
+  const partes = buscaNorm(q).split(' ').filter(Boolean);
+  if(!partes.length) return true;
+  const h = buscaNorm(texto), hc = buscaCompacto(h);
+  return partes.every(t=>h.includes(t) || (buscaCompacto(t) && hc.includes(buscaCompacto(t))));
+}
+const BUSCA_MANUAL = '.searchbox:not(.autoBuscar), input[type=search]:not(.autoBuscar)';
+const buscaTieneManual = el=>!!(el && (el.matches(BUSCA_MANUAL) || el.querySelector(BUSCA_MANUAL)));
+// ¿la pantalla ya le puso su propio buscador a esta lista? (dentro, o justo antes de ella o de su caja)
+function buscaHayManualCerca(el){
+  if(buscaTieneManual(el)) return true;
+  for(let n = el, nivel = 0; n && nivel < 2; n = n.parentElement, nivel++){
+    // solo lo inmediato: hasta 2 hermanos antes, y un título corta la búsqueda (es otra lista)
+    let s = n.previousElementSibling;
+    for(let k = 0; s && k < 2 && !/^H[1-6]$/.test(s.tagName); s = s.previousElementSibling, k++) if(buscaTieneManual(s)) return true;
+  }
+  return false;
+}
+const buscaConsultas = new WeakMap();   // contenedor -> lo último que se escribió, sobrevive a repintados
+
+function buscaItemsDe(cont){
+  if(cont.tagName === 'TBODY') return [...cont.children].filter(x=>x.tagName === 'TR');
+  return [...cont.children].filter(x=>x.classList.contains('comp-item'));
+}
+function buscaFiltrar(cont, q){
+  const items = buscaItemsDe(cont);
+  let vistos = 0;
+  items.forEach(it=>{
+    const ok = buscaCoincide((it.dataset.buscar || '') + ' ' + it.textContent, q);
+    it.classList.toggle('buscaOculto', !ok);
+    if(ok) vistos++;
+  });
+  let nada = cont.tagName === 'TBODY' ? null : cont.querySelector(':scope > .buscaNada');
+  if(cont.tagName !== 'TBODY'){
+    if(!nada){ nada = document.createElement('div'); nada.className = 'empty buscaNada'; nada.textContent = 'Nada coincide con la búsqueda.'; cont.appendChild(nada); }
+    nada.style.display = q.trim() && !vistos ? '' : 'none';
+  }
+}
+function buscaPonerEnLista(cont){
+  const items = buscaItemsDe(cont);
+  // el buscador va pegado antes del primer elemento (o antes de la tabla)
+  const ancla = cont.tagName === 'TBODY' ? (cont.closest('.presuScroll') || cont.closest('table')) : items[0];
+  const yaEsta = cont.tagName === 'TBODY'
+    ? ancla.previousElementSibling && ancla.previousElementSibling.classList.contains('autoBuscar')
+    : cont.querySelector(':scope > .autoBuscar');
+  if(yaEsta){
+    // repintado: si el buscador quedó debajo de los elementos, se vuelve a subir y se reaplica
+    if(cont.tagName !== 'TBODY' && yaEsta.compareDocumentPosition(items[0]) & Node.DOCUMENT_POSITION_PRECEDING) cont.insertBefore(yaEsta, items[0]);
+    if(yaEsta.value) buscaFiltrar(cont, yaEsta.value);
+    return;
+  }
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'searchbox autoBuscar';
+  inp.placeholder = '🔍 Buscar en esta lista (' + items.length + ')…';
+  inp.autocomplete = 'off';
+  inp.value = buscaConsultas.get(cont) || '';
+  inp.oninput = ()=>{ buscaConsultas.set(cont, inp.value); buscaFiltrar(cont, inp.value); };
+  ancla.parentNode.insertBefore(inp, ancla);
+  if(inp.value) buscaFiltrar(cont, inp.value);
+}
+function buscaPonerEnSelect(sel){
+  if(sel.dataset.buscaSel || sel.multiple) return;
+  sel.dataset.buscaSel = '1';
+  const caja = document.createElement('input');
+  caja.type = 'text';
+  caja.className = 'buscaSelect';
+  caja.placeholder = '🔍 Buscar…';
+  caja.autocomplete = 'off';
+  sel.parentNode.insertBefore(caja, sel);
+  let todas = [], propio = false;
+  const leer = ()=>{ todas = [...sel.options].map(o=>({v: o.value, t: o.textContent, d: o.disabled})); };
+  leer();
+  // si la pantalla vuelve a llenar el selector, se toma la lista nueva
+  new MutationObserver(()=>{ if(!propio){ leer(); caja.value = ''; } }).observe(sel, {childList: true});
+  caja.oninput = ()=>{
+    const q = caja.value, actual = sel.value;
+    const reales = todas.filter(o=>o.v !== '' && buscaCoincide(o.v + ' ' + o.t, q));
+    const quedan = todas.filter(o=>o.v === '' || o.v === actual || reales.includes(o));
+    propio = true;
+    sel.innerHTML = quedan.map(o=>'<option value="' + escHtml(o.v) + '"' + (o.d ? ' disabled' : '') + '>' + escHtml(o.t) + '</option>').join('');
+    sel.value = actual;
+    // con una sola coincidencia, queda elegida de una vez
+    if(q.trim() && reales.length === 1 && actual !== reales[0].v){
+      sel.value = reales[0].v;
+      sel.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+    setTimeout(()=>{ propio = false; }, 0);
+  };
+}
+function buscaRevisar(){
+  // listas de tarjetas
+  const padres = new Set();
+  document.querySelectorAll('.comp-item').forEach(it=>{ if(it.parentElement) padres.add(it.parentElement); });
+  padres.forEach(p=>{
+    if(p.closest('.noBuscar')) return;
+    if(buscaItemsDe(p).length < BUSCA_MIN_LISTA) return;
+    if(!p.querySelector(':scope > .autoBuscar') && buscaHayManualCerca(p)) return;
+    buscaPonerEnLista(p);
+  });
+  // tablas
+  document.querySelectorAll('table tbody').forEach(tb=>{
+    if(tb.closest('.noBuscar') || buscaItemsDe(tb).length < BUSCA_MIN_LISTA) return;
+    const tabla = tb.closest('table');
+    const caja = tabla.closest('.presuScroll') || tabla;
+    const previo = caja.previousElementSibling;
+    if(!(previo && previo.classList.contains('autoBuscar')) && buscaHayManualCerca(caja)) return;
+    buscaPonerEnLista(tb);
+  });
+  // selectores largos
+  document.querySelectorAll('select').forEach(sel=>{
+    if(!sel.dataset.buscaSel && sel.options.length >= BUSCA_MIN_SELECT && sel.parentNode) buscaPonerEnSelect(sel);
+  });
+}
+let buscaPendiente = null;
+new MutationObserver(()=>{
+  if(buscaPendiente) return;
+  buscaPendiente = setTimeout(()=>{ buscaPendiente = null; try{ buscaRevisar(); }catch(e){ console.warn('buscadores', e); } }, 120);
+}).observe(document.documentElement, {childList: true, subtree: true});
 
 function avisoBase(msg, esError){
   const btn = document.getElementById('btnSesion');
@@ -6332,8 +6467,10 @@ function claveTemporal(){
 
 function urlPortal(){ return new URL('portal.html', location.href).href; }
 
+// esNueva: true = acceso nuevo, false = clave nueva, 'recordar' = la misma clave de siempre
 function mensajeAcceso(nombre, aptId, correo, clave, esNueva){
-  let tpl = plantillaWA(esNueva ? 'whatsapp_tpl_acceso_nuevo' : 'whatsapp_tpl_acceso_clave');
+  let tpl = plantillaWA(esNueva === 'recordar' ? 'whatsapp_tpl_acceso_recordar'
+    : esNueva ? 'whatsapp_tpl_acceso_nuevo' : 'whatsapp_tpl_acceso_clave');
   if(!aptId) tpl = tpl.replace(/ ?\(apartamento \{id\}\)/, '');
   return fillTemplate(tpl, {nombre: nombre || '', id: aptId || '', portal: urlPortal(), correo, clave});
 }
@@ -6346,6 +6483,30 @@ async function llamarUsuarios(cuerpo){
     throw new Error(msj);
   }
   return data;
+}
+
+// copia de la clave del vecino (sql/37) para poder reenviarla sin cambiarla.
+// Solo cuentas de vecinos; si falla no frena nada: la clave ya quedó asignada.
+async function guardarClavePortal(perfilId, clave){
+  if(!perfilId || !clave) return false;
+  const { error } = await db.from('claves_portal').upsert({
+    perfil_id: perfilId, clave, actualizado_por: miPerfil && miPerfil.id, actualizado_en: new Date().toISOString()
+  });
+  if(error){ console.warn('claves_portal', error.message); return false; }
+  return true;
+}
+async function leerClavePortal(perfilId){
+  const { data, error } = await db.from('claves_portal').select('clave').eq('perfil_id', perfilId).maybeSingle();
+  if(error) throw new Error(/claves_portal|relation|schema cache/i.test(error.message) ? 'falta correr sql/37_claves_portal.sql en Supabase' : error.message);
+  return data ? data.clave : null;
+}
+// comprueba una clave entrando con un cliente aparte (no toca la sesión de la junta)
+async function claveEsCorrecta(correo, clave){
+  const prueba = window.supabase.createClient(SB_URL, SB_KEY, {auth:{persistSession:false, autoRefreshToken:false, storageKey:'hh-verifica-clave'}});
+  const { error } = await prueba.auth.signInWithPassword({ email: correo, password: clave });
+  if(error) return false;
+  try{ await prueba.auth.signOut({ scope: 'local' }); }catch(e){}
+  return true;
 }
 
 function renderUsuariosSeccion(body){
@@ -6449,7 +6610,8 @@ function renderUsuariosSeccion(body){
     if(datos.clave.length < 8){ alert('La clave debe tener al menos 8 caracteres.'); return; }
     const b = sec.querySelector('#usCrear'); b.disabled = true; b.textContent = 'Creando…';
     try{
-      await llamarUsuarios(datos);
+      const r = await llamarUsuarios(datos);
+      if(rol === 'vecino' && r && r.id) await guardarClavePortal(r.id, datos.clave);
       ofrecerWhatsApp(sec.querySelector('#usResultado'), datos.apartamento_id, datos.nombre, datos.correo, datos.clave, true, '✓ Usuario creado');
       sec.querySelector('#usClave').value = claveTemporal();
       selApt.value = ''; sec.querySelector('#usNombre').value = ''; sec.querySelector('#usCorreo').value = '';
@@ -6509,7 +6671,8 @@ function renderUsuariosSeccion(body){
           + (p.id === miPerfil.id || !asignables.includes(p.rol) ? '' : '<div style="display:flex;gap:6px;">'
             + '<button class="chip" data-us-clave="' + p.id + '" style="background:var(--panel2);flex:1;">🔑 Nueva clave</button>'
             + '<button class="chip" data-us-correo="' + p.id + '" style="background:var(--panel2);flex:1;">✉️ Cambiar correo</button>'
-            + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>')
+            + '<button class="chip" data-us-activo="' + p.id + '" style="background:var(--panel2);flex:1;">' + (p.activo ? '⏸ Desactivar' : '▶ Activar') + '</button></div>'
+            + (p.rol === 'vecino' && p.activo ? '<button class="chip" data-us-reenviar="' + p.id + '" style="background:var(--green);color:#fff;width:100%;">📲 Reenviar acceso (misma clave)</button>' : ''))
           + (() => {
               const puedeTocar = asignables.includes(p.rol) && p.id !== miPerfil.id;
               // cambio de dueño: la cuenta quedó a nombre del anterior
@@ -6546,6 +6709,7 @@ function renderUsuariosSeccion(body){
         if(error || !(hecho || []).length) throw new Error('no se pudo poner el nombre' + (error ? ': ' + error.message : ' (sin permiso)'));
         const clave = claveTemporal();
         await llamarUsuarios({ accion: 'clave', id: p.id, clave });
+        if(p.rol === 'vecino') await guardarClavePortal(p.id, clave);
         await pintarLista();
         ofrecerWhatsApp(host.querySelector('[data-us-res="' + p.id + '"]'), p.apartamento_id, nombre, correo, clave, true, '✓ Cuenta pasada a ' + nombre);
       }catch(e){
@@ -6612,9 +6776,41 @@ function renderUsuariosSeccion(body){
       b.disabled = true;
       try{
         await llamarUsuarios({ accion: 'clave', id: p.id, clave });
+        if(p.rol === 'vecino') await guardarClavePortal(p.id, clave);
         ofrecerWhatsApp(host.querySelector('[data-us-res="' + p.id + '"]'), p.apartamento_id, nombreUsuario(p), p.correo, clave, false, '✓ Clave nueva asignada');
       }catch(e){ alert('No se pudo cambiar la clave: ' + (e.message||e)); }
       b.disabled = false;
+    }; });
+    // reenviar el acceso con la MISMA clave (la que quedó guardada al crearla o asignarla)
+    host.querySelectorAll('[data-us-reenviar]').forEach(b=>{ b.onclick = async ()=>{
+      const p = perfiles.find(x=>x.id===b.dataset.usReenviar);
+      const res = host.querySelector('[data-us-res="' + p.id + '"]');
+      b.disabled = true;
+      let clave = null;
+      try{ clave = await leerClavePortal(p.id); }
+      catch(e){ b.disabled = false; alert('No se pudo leer la clave: ' + (e.message||e)); return; }
+      b.disabled = false;
+      if(clave){
+        ofrecerWhatsApp(res, p.apartamento_id, nombreUsuario(p), p.correo, clave, 'recordar', '📲 Acceso de ' + (p.apartamento_id || p.correo) + ' (misma clave)');
+        return;
+      }
+      // cuenta creada antes de guardar copias: se puede anotar la clave si la Junta la sabe
+      res.innerHTML = '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:6px;background:color-mix(in srgb, var(--amber) 10%, transparent);">'
+        + '<span style="font-size:12.5px;">El sistema no tiene guardada la clave de esta cuenta: se creó antes de que se guardaran. '
+        + 'Si la Junta la sabe (por ejemplo, en el WhatsApp que se le mandó), escríbela aquí: la compruebo y queda guardada para reenviarla siempre.</span>'
+        + '<input type="text" data-us-clave-sabida placeholder="Clave que tiene hoy" autocomplete="off" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px;font-size:13px;">'
+        + '<div style="display:flex;gap:6px;"><button class="chip" data-us-clave-ok style="background:var(--accent);color:#fff;flex:1;">✓ Comprobar y guardar</button>'
+        + '<button class="chip" data-us-clave-nueva style="background:var(--panel2);flex:1;">🔑 Mejor asignar una nueva</button></div></div>';
+      res.querySelector('[data-us-clave-nueva]').onclick = ()=>host.querySelector('[data-us-clave="' + p.id + '"]').click();
+      res.querySelector('[data-us-clave-ok]').onclick = async e=>{
+        const sabida = res.querySelector('[data-us-clave-sabida]').value.trim();
+        if(sabida.length < 8){ alert('La clave tiene al menos 8 caracteres.'); return; }
+        e.target.disabled = true; e.target.textContent = 'Comprobando…';
+        const ok = await claveEsCorrecta(p.correo, sabida).catch(()=>false);
+        if(!ok){ e.target.disabled = false; e.target.textContent = '✓ Comprobar y guardar'; alert('Esa no es la clave de ' + p.correo + '. Revísala o asigna una nueva.'); return; }
+        if(!await guardarClavePortal(p.id, sabida)){ e.target.disabled = false; e.target.textContent = '✓ Comprobar y guardar'; alert('La clave es correcta, pero no se pudo guardar (¿falta correr sql/37?).'); return; }
+        ofrecerWhatsApp(res, p.apartamento_id, nombreUsuario(p), p.correo, sabida, 'recordar', '✓ Clave comprobada y guardada');
+      };
     }; });
   }
   pintarLista();
