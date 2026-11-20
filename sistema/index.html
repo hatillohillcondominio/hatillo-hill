@@ -4292,6 +4292,8 @@ let presupuestoEditando = false;
 
 function mesLegible(id){
   if(!id) return '';
+  // 2026-09 no es septiembre: guarda la deuda heredada de la administradora anterior (sql/22), hasta octubre 2026
+  if(id === '2026-09') return 'deuda anterior (administradora anterior, hasta octubre 2026)';
   const [a, m] = id.split('-');
   const nombres = ['enero','febrero','marzo','abril','mayo','junio','julio',
                    'agosto','septiembre','octubre','noviembre','diciembre'];
