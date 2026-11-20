@@ -490,7 +490,9 @@ const PLANTILLAS_WA_EXTRA = [
   {clave: 'whatsapp_tpl_acceso_clave', nombre: 'Clave nueva del portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
    defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le asignamos una clave nueva para el portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'},
   {clave: 'whatsapp_tpl_acceso_recordar', nombre: 'Reenviar el acceso al portal (misma clave)', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
-   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le recordamos sus datos para entrar al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nSu clave es la misma de siempre; si la olvida, pídala a la Junta. Gracias.'}
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le recordamos sus datos para entrar al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nSu clave es la misma de siempre; si la olvida, pídala a la Junta. Gracias.'},
+  {clave: 'whatsapp_tpl_acceso_disculpa', nombre: 'Envío a todos: disculpa y clave nueva', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
+   defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill.\n\nLe pedimos disculpas: hace unos días se crearon los usuarios del portal del condominio, pero los datos de acceso nunca se le enviaron. Ya lo corregimos y aquí se los enviamos nuevamente.\n\nPor seguridad, asignamos claves nuevas a todos los vecinos: cualquier clave anterior ya no sirve. Use solo la que aparece en este mensaje.\n\nPortal: {portal}\nApartamento: {id}\nCorreo: {correo}\nClave: {clave}\n\nEn el portal puede ver sus recibos, su saldo y reportar sus pagos. Guarde esta clave; si la olvida, pídala a la Junta. Gracias por su comprensión.'}
 ];
 let plantillasWA = {};
 function plantillaWA(clave){
@@ -6539,6 +6541,7 @@ function urlPortal(){ return new URL('portal.html', location.href).href; }
 // esNueva: true = acceso nuevo, false = clave nueva, 'recordar' = la misma clave de siempre
 function mensajeAcceso(nombre, aptId, correo, clave, esNueva){
   let tpl = plantillaWA(esNueva === 'recordar' ? 'whatsapp_tpl_acceso_recordar'
+    : esNueva === 'disculpa' ? 'whatsapp_tpl_acceso_disculpa'
     : esNueva ? 'whatsapp_tpl_acceso_nuevo' : 'whatsapp_tpl_acceso_clave');
   if(!aptId) tpl = tpl.replace(/ ?\(apartamento \{id\}\)/, '');
   return fillTemplate(tpl, {nombre: nombre || '', id: aptId || '', portal: urlPortal(), correo, clave});
@@ -6577,6 +6580,13 @@ async function claveEsCorrecta(correo, clave){
   try{ await prueba.auth.signOut({ scope: 'local' }); }catch(e){}
   return true;
 }
+
+// cola del envío masivo de accesos; en esta PC se recuerda a quién ya se le abrió el mensaje
+let colaAccesos = null;
+const ENVIADOS_ACCESO_KEY = 'hh-acceso-enviados';
+function leerEnviadosAcceso(){ try{ return new Set(JSON.parse(localStorage.getItem(ENVIADOS_ACCESO_KEY) || '[]')); }catch(e){ return new Set(); } }
+function guardarEnviadosAcceso(set){ try{ localStorage.setItem(ENVIADOS_ACCESO_KEY, JSON.stringify([...set])); }catch(e){} }
+function marcarEnviadoAcceso(id){ const s = leerEnviadosAcceso(); s.add(id); guardarEnviadosAcceso(s); }
 
 function renderUsuariosSeccion(body){
   const asignables = rolesAsignables();
@@ -6717,7 +6727,14 @@ function renderUsuariosSeccion(body){
       .map(a=>'<option value="'+escHtml(a.id)+'">'+escHtml(a.id)+' · '+escHtml(a.propietario||'')+'</option>').join('');
     if(valorApt && !conCuenta.has(valorApt)) selApt.value = valorApt;
     const cambiados = perfiles.filter(p=>otroDueno(p));
-    host.innerHTML = '<h3 class="section" style="margin-top:14px;">Usuarios (' + perfiles.length + ')</h3>'
+    const vecinosActivos = perfiles.filter(p=>p.rol === 'vecino' && p.activo && p.apartamento_id);
+    host.innerHTML = (asignables.includes('vecino') && vecinosActivos.length ? '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:12px;background:color-mix(in srgb, var(--accent) 8%, transparent);">'
+        + '<b>📣 Acceso para todos los vecinos (' + vecinosActivos.length + ' cuentas activas)</b>'
+        + '<span style="font-size:12px;color:var(--sub);">El mensaje pide disculpas, explica que las claves anteriores ya no sirven y trae la clave nueva de cada uno. Se edita en Config › WhatsApp (“Envío a todos: disculpa y clave nueva”).</span>'
+        + '<button class="chip" id="usMasivoClaves" style="background:var(--accent);color:#fff;">🔑 Clave nueva a todos y preparar el envío</button>'
+        + '<button class="chip" id="usMasivoCola" style="background:var(--panel2);">📲 Preparar el envío con las claves ya guardadas</button>'
+        + '<div id="usMasivoRes"></div></div>' : '')
+      + '<h3 class="section" style="margin-top:14px;">Usuarios (' + perfiles.length + ')</h3>'
       + (cambiados.length ? '<div class="assumption" style="margin-top:0;color:var(--amber);"><b>' + cambiados.length
           + (cambiados.length === 1 ? ' cuenta de vecino sigue' : ' cuentas de vecino siguen') + ' a nombre del propietario anterior</b> ('
           + cambiados.map(p=>escHtml(p.apartamento_id)).join(', ') + '). Usa “🔗 Pasar al propietario actual” en su tarjeta.</div>' : '')
@@ -6755,6 +6772,72 @@ function renderUsuariosSeccion(body){
             })()
           + '<div data-us-res="' + p.id + '"></div></div>').join('');
     filtrarUsuarios();
+
+    // ----- envío masivo del acceso (disculpa + clave nueva) -----
+    const resMasivo = host.querySelector('#usMasivoRes');
+    const pintarCola = ()=>{
+      if(!resMasivo || !colaAccesos) return;
+      const enviados = leerEnviadosAcceso();
+      const pend = colaAccesos.filter(x=>x.tel && !enviados.has(x.perfil_id));
+      const sinTel = colaAccesos.filter(x=>!x.tel);
+      const sig = pend[0];
+      resMasivo.innerHTML = '<div style="font-size:12.5px;margin:4px 0;"><b>' + (colaAccesos.length - pend.length - sinTel.length) + ' de ' + (colaAccesos.length - sinTel.length) + ' enviados.</b>'
+        + (sinTel.length ? ' <span style="color:var(--amber);">Sin teléfono: ' + sinTel.map(x=>escHtml(x.apt)).join(', ') + '.</span>' : '') + '</div>'
+        + (sig ? '<button class="chip" id="usColaSig" style="background:var(--green);color:#fff;width:100%;padding:10px;">📲 Enviar el siguiente: ' + escHtml(sig.apt) + ' · ' + escHtml(sig.nombre) + '</button>'
+               : '<div class="assumption" style="color:var(--green);margin:0;">✓ Todos los mensajes se abrieron en WhatsApp.</div>')
+        + '<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:12.5px;">Ver la lista</summary>'
+        + colaAccesos.map(x=>'<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px;padding:3px 0;border-bottom:1px solid var(--border);">'
+            + '<span>' + (enviados.has(x.perfil_id) ? '✅' : x.tel ? '⏳' : '⚠️') + ' <b>' + escHtml(x.apt) + '</b> · ' + escHtml(x.nombre) + (x.tel ? ' · ' + escHtml(x.tel) : ' · sin teléfono') + '</span>'
+            + (x.tel ? '<button class="chip" data-cola-env="' + x.perfil_id + '" style="background:var(--panel2);font-size:11px;">' + (enviados.has(x.perfil_id) ? 'Otra vez' : 'Enviar') + '</button>' : '') + '</div>').join('')
+        + '<button class="chip" id="usColaReset" style="background:var(--panel2);width:100%;margin-top:6px;font-size:11.5px;">Marcar todos como no enviados</button></details>';
+      const enviar = x=>{
+        openWhatsApp(x.tel, mensajeAcceso(x.nombre, x.apt, x.correo, x.clave, 'disculpa'), apartments.find(a=>a.id===x.apt));
+        marcarEnviadoAcceso(x.perfil_id); pintarCola();
+      };
+      const bs = resMasivo.querySelector('#usColaSig'); if(bs) bs.onclick = ()=>enviar(sig);
+      resMasivo.querySelectorAll('[data-cola-env]').forEach(b=>{ b.onclick = ()=>enviar(colaAccesos.find(x=>x.perfil_id===b.dataset.colaEnv)); });
+      resMasivo.querySelector('#usColaReset').onclick = ()=>{ if(confirm('¿Marcar todos como no enviados?')){ guardarEnviadosAcceso(new Set()); pintarCola(); } };
+    };
+    const armarCola = async ()=>{
+      const { data, error } = await db.from('claves_portal').select('perfil_id, clave');
+      if(error) throw new Error(error.message);
+      const claves = new Map((data || []).map(r=>[r.perfil_id, r.clave]));
+      colaAccesos = vecinosActivos.filter(p=>claves.has(p.id)).map(p=>{
+        const a = fichaDe(p) || {};
+        const op = getContactOptions(a)[0];
+        return {perfil_id: p.id, apt: p.apartamento_id, nombre: nombreUsuario(p), correo: p.correo, clave: claves.get(p.id), tel: op ? op.telefono : ''};
+      }).sort((x,y)=>x.apt.localeCompare(y.apt));
+      return vecinosActivos.length - colaAccesos.length;
+    };
+    const bMasivo = host.querySelector('#usMasivoClaves');
+    if(bMasivo) bMasivo.onclick = async ()=>{
+      if(!confirm('¿Asignar una CLAVE NUEVA a las ' + vecinosActivos.length + ' cuentas de vecinos activas?\n\nLas claves que tienen hoy dejarán de servir. Después se prepara la lista para enviarle a cada uno su acceso por WhatsApp.')) return;
+      bMasivo.disabled = true;
+      const fallos = [];
+      for(let i = 0; i < vecinosActivos.length; i++){
+        const p = vecinosActivos[i];
+        bMasivo.textContent = 'Asignando claves… ' + (i + 1) + ' de ' + vecinosActivos.length;
+        const clave = claveTemporal();
+        try{
+          await llamarUsuarios({ accion: 'clave', id: p.id, clave });
+          if(!await guardarClavePortal(p.id, clave)) fallos.push(p.apartamento_id + ' (clave asignada pero no guardada)');
+        }catch(e){ fallos.push(p.apartamento_id + ': ' + (e.message || e)); }
+      }
+      guardarEnviadosAcceso(new Set());
+      try{ await armarCola(); }catch(e){ alert('No se pudo armar la lista: ' + (e.message || e)); }
+      bMasivo.disabled = false; bMasivo.textContent = '✓ Claves nuevas asignadas';
+      if(fallos.length) alert('Hubo problemas con ' + fallos.length + ':\n' + fallos.join('\n'));
+      pintarCola();
+    };
+    const bCola = host.querySelector('#usMasivoCola');
+    if(bCola) bCola.onclick = async ()=>{
+      try{
+        const sin = await armarCola();
+        pintarCola();
+        if(sin) resMasivo.insertAdjacentHTML('afterbegin', '<div class="assumption" style="margin:0;color:var(--amber);">' + sin + ' cuentas no tienen clave guardada: usa “🔑 Clave nueva a todos”.</div>');
+      }catch(e){ alert('No se pudo armar la lista: ' + (e.message || e)); }
+    };
+    if(colaAccesos) pintarCola();
 
     host.querySelectorAll('[data-us-pasar]').forEach(b=>{ b.onclick = async ()=>{
       const p = perfiles.find(x=>x.id===b.dataset.usPasar);
