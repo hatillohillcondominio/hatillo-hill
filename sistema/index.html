@@ -1656,23 +1656,94 @@ function fillTemplate(tpl, vars){
 function openWhatsApp(telefono, mensaje, apt){
   const num = toWhatsAppNumber(telefono);
   if(!num){ alert('Este apartamento no tiene un teléfono válido registrado. Agrégalo en la pestaña Editar.'); return false; }
-  const text = encodeURIComponent(mensaje);
-  const url = preferWhatsappEscritorio
-    ? ('whatsapp://send?phone='+num+'&text='+text)
-    : ('https://wa.me/'+num+'?text='+text);
-  // Se dispara con un click real sobre un <a>, no window.open(): en apps embebidas
-  // (como el visor de escritorio) esto respeta la sesión de WhatsApp ya iniciada
-  // en el navegador/app del sistema en lugar de abrir una ventana aislada sin cookies.
-  const a = document.createElement('a');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  abrirWA(num, mensaje);
   if(apt){ apt.ultimo_envio = new Date().toISOString(); saveApt(apt); }
   return true;
 }
+
+// ---------- desde qué WhatsApp se envía (se elige en cada PC) ----------
+// 'app' = WhatsApp de escritorio (whatsapp://), 'web' = WhatsApp Web (web.whatsapp.com,
+// siempre en la misma pestaña), 'preguntar' = cartel con los dos botones en cada envío.
+// Se guarda en esta PC, no en la base: cada computadora tiene su propio WhatsApp.
+const WA_DESTINO_KEY = 'hh-wa-destino';
+function waDestino(){
+  let v = null;
+  try{ v = localStorage.getItem(WA_DESTINO_KEY); }catch(e){}
+  if(v === 'app' || v === 'web' || v === 'preguntar') return v;
+  return preferWhatsappEscritorio ? 'app' : 'preguntar';
+}
+function guardarWaDestino(v){ try{ localStorage.setItem(WA_DESTINO_KEY, v); }catch(e){} pintarWaDestino(); }
+function urlWA(destino, num, mensaje){
+  const t = mensaje ? encodeURIComponent(mensaje) : '';
+  if(destino === 'app') return 'whatsapp://send?' + (num ? 'phone=' + num + '&' : '') + 'text=' + t;
+  return 'https://web.whatsapp.com/send?' + (num ? 'phone=' + num + '&' : '') + 'text=' + t;
+}
+// Se dispara con un click real sobre un <a>, no window.open(): respeta la sesión de
+// WhatsApp ya iniciada. WhatsApp Web va a una pestaña con nombre fijo para reusarla.
+function lanzarWA(destino, num, mensaje){
+  const a = document.createElement('a');
+  a.href = urlWA(destino, num, mensaje);
+  a.target = destino === 'web' ? 'hh-whatsapp-web' : '_blank';
+  if(destino !== 'web') a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function abrirWA(num, mensaje){
+  const destino = waDestino();
+  if(destino !== 'preguntar'){ lanzarWA(destino, num, mensaje); return; }
+  const viejo = document.getElementById('waElegir'); if(viejo) viejo.remove();
+  const caja = document.createElement('div');
+  caja.id = 'waElegir';
+  caja.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;';
+  caja.innerHTML = '<div style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:16px;max-width:340px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.35);">'
+    + '<div style="font-weight:700;margin-bottom:4px;">¿Desde cuál WhatsApp lo envío?</div>'
+    + '<div style="font-size:12px;color:var(--sub);margin-bottom:12px;">' + (num ? 'Para +' + escHtml(num) : 'Eliges el contacto en WhatsApp') + '</div>'
+    + '<div style="display:flex;gap:8px;"><button class="chip" data-wa-ir="app" style="flex:1;background:var(--green);color:#fff;padding:10px;">💻 App de escritorio</button>'
+    + '<button class="chip" data-wa-ir="web" style="flex:1;background:var(--accent);color:#fff;padding:10px;">🌐 WhatsApp Web</button></div>'
+    + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:12px;"><input type="checkbox" data-wa-recordar> Recordar en esta PC (se cambia en Config)</label>'
+    + '<button class="chip" data-wa-cancelar style="width:100%;margin-top:10px;background:var(--panel2);">Cancelar</button></div>';
+  document.body.appendChild(caja);
+  caja.onclick = e=>{
+    if(e.target === caja || e.target.closest('[data-wa-cancelar]')){ caja.remove(); return; }
+    const b = e.target.closest('[data-wa-ir]');
+    if(!b) return;
+    if(caja.querySelector('[data-wa-recordar]').checked) guardarWaDestino(b.dataset.waIr);
+    caja.remove();
+    lanzarWA(b.dataset.waIr, num, mensaje);
+  };
+}
+// indicador en el menú de arriba: muestra el destino y al tocarlo lo cambia
+function pintarWaDestino(){
+  const b = document.getElementById('waDestinoBtn');
+  if(!b) return;
+  const d = waDestino();
+  b.textContent = d === 'app' ? '💻 WA App' : d === 'web' ? '🌐 WA Web' : '❓ WA';
+  b.title = 'Los WhatsApp se envían desde: ' + (d === 'app' ? 'la app de escritorio' : d === 'web' ? 'WhatsApp Web' : 'preguntar cada vez') + '. Toca para cambiar.';
+}
+function ponerWaDestinoBtn(){
+  if(document.getElementById('waDestinoBtn')) return;
+  const ancla = document.getElementById('btnSesion');
+  if(!ancla || !ancla.parentNode) return;
+  const b = document.createElement('button');
+  b.id = 'waDestinoBtn';
+  b.type = 'button';
+  b.className = ancla.className;
+  b.style.cssText = 'white-space:nowrap;background:#1f8f5a;color:#fff;';
+  b.onclick = ()=>{
+    const orden = ['app', 'web', 'preguntar'];
+    guardarWaDestino(orden[(orden.indexOf(waDestino()) + 1) % orden.length]);
+  };
+  ancla.parentNode.insertBefore(b, ancla);
+  pintarWaDestino();
+}
+ponerWaDestinoBtn();
+// cualquier enlace wa.me que quede en la app pasa por la misma elección
+document.addEventListener('click', e=>{
+  const a = e.target.closest && e.target.closest('a[href^="https://wa.me/"]');
+  if(!a) return;
+  e.preventDefault();
+  const u = new URL(a.href);
+  abrirWA(u.pathname.replace(/\D/g, '') || null, u.searchParams.get('text') || '');
+}, true);
 // contactos con telefono valido de un apartamento: principal, segundo contacto e inquilino (si esta alquilado)
 function getContactOptions(apt){
   const opts = [];
@@ -6329,9 +6400,7 @@ function renderAvisosSeccion(body){
   sec.querySelector('#avWhats').onclick = ()=>{
     const m = txt.value.trim();
     if(!m){ alert('Escribe el mensaje.'); return; }
-    const url = preferWhatsappEscritorio ? 'whatsapp://send?text=' + encodeURIComponent(m) : 'https://wa.me/?text=' + encodeURIComponent(m);
-    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener';
-    document.body.appendChild(a); a.click(); a.remove();
+    abrirWA(null, m);
   };
   sec.querySelector('#avCopiar').onclick = async e=>{
     try{ await navigator.clipboard.writeText(txt.value); e.target.textContent = '✓ Copiado'; setTimeout(()=>{ e.target.textContent = '📋 Copiar'; }, 1800); }
@@ -8695,12 +8764,13 @@ function renderConfigTab(body){
       </div><div class="assumption" style="margin-top:-2px;">Variables: ${esc(p.vars)}. Si lo dejas vacío vuelve al texto original.</div>`).join('')}
       <div class="form-row two">
         <div><label>Recordar cada (días)</label><input id="frecDias" type="number" min="1" value="${recordatorioFrecuenciaDias}"></div>
-        <div style="display:flex;align-items:flex-end;padding-bottom:8px;">
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--sub);font-weight:600;">
-            <input id="chkEscritorio" type="checkbox" ${preferWhatsappEscritorio?'checked':''}> App de escritorio
-          </label>
-        </div>
+        <div><label>Enviar desde (esta PC)</label><select id="selWaDestino" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:7px;">
+          <option value="preguntar"${waDestino()==='preguntar'?' selected':''}>❓ Preguntar cada vez</option>
+          <option value="app"${waDestino()==='app'?' selected':''}>💻 App de escritorio</option>
+          <option value="web"${waDestino()==='web'?' selected':''}>🌐 WhatsApp Web</option>
+        </select></div>
       </div>
+      <div class="assumption" style="margin-top:-2px;">Se guarda solo en esta computadora: cada PC envía desde su propio WhatsApp. También se cambia con el botón de WhatsApp del menú de arriba.</div>
       <div class="savebar"><button class="btn primary" id="btnGuardarConfigWA" style="flex:1;">Guardar configuración</button></div>
       <div class="savedFlag" id="flagConfigWA"></div>
       <h3 class="section" style="margin-top:14px;">Cargar teléfonos en lote</h3>
@@ -8856,7 +8926,7 @@ function renderConfigTab(body){
       try{ await guardarConfig(clave, valor); }catch(e){ console.error(e); }
     }
     await saveRecordatorioFrecuencia(parseInt(document.getElementById('frecDias').value,10) || 15);
-    await savePreferWhatsappEscritorio(document.getElementById('chkEscritorio').checked);
+    guardarWaDestino(document.getElementById('selWaDestino').value);
     const flag = document.getElementById('flagConfigWA');
     flag.textContent = '✓ Configuración guardada';
     setTimeout(()=>{ if(flag) flag.textContent=''; }, 2000);
