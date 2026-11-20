@@ -77,6 +77,7 @@
   .card:hover{border-color:var(--accent);box-shadow:0 2px 8px rgba(60,50,30,.08);}
   .card .idrow{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}
   .card .idlabel{font-weight:700;font-size:13.5px;}
+  .cobIcon{margin-right:4px;font-size:13px;}
   .dIcon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:10px;font-weight:800;margin-right:5px;}
   .shellyIcon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--green);color:#fff;font-size:10px;font-weight:800;margin-right:5px;}
   .card .badge{font-size:10px;padding:2px 7px;border-radius:20px;font-weight:700;}
@@ -478,6 +479,9 @@ const PLANTILLAS_WA_EXTRA = [
   {clave: 'whatsapp_tpl_pago_recibido', nombre: 'Pago de condominio recibido (al propietario)',
    vars: '{nombre}, {id}, {monto}, {bs} (sale como " (Bs X)" si pagó en bolívares), {forma}, {referencia} (sale como ", ref. 123" si hay), {fecha}, {saldo} (queda al día / saldo pendiente / saldo a favor), {portal}',
    defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Recibimos su pago de ${monto}{bs} del apartamento {id} ({forma}{referencia}, el {fecha}).\n\n{saldo}\n\nPuede ver el detalle en el portal: {portal}\n\nGracias.'},
+  {clave: 'whatsapp_tpl_aviso_abogada', nombre: 'Aviso a la abogada: pagó un apartamento en cobranza',
+   vars: '{abogada}, {id}, {propietario}, {monto}, {bs} (sale como " (Bs X)" si pagó en bolívares), {fecha}, {forma}, {referencia}, {detalle} (qué recibos o meses paga), {saldo} (saldo pendiente o "queda al día")',
+   defecto: 'Hola {abogada}, le escribe la Junta de Condominio de Hatillo Hill. Le informamos que el apartamento {id} ({propietario}), que está en cobranza con usted, realizó un pago:\n\nFecha: {fecha}\nMonto: ${monto}{bs}\nForma de pago: {forma}\nReferencia: {referencia}\nPaga: {detalle}\n\n{saldo}\n\nGracias.'},
   {clave: 'whatsapp_tpl_acceso_nuevo', nombre: 'Acceso nuevo al portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
    defecto: 'Hola {nombre}, le escribe la Junta de Condominio de Hatillo Hill. Le creamos su acceso al portal del condominio (apartamento {id}). Ahí puede ver sus recibos, su saldo y reportar sus pagos.\n\nEntre aquí: {portal}\nCorreo: {correo}\nClave: {clave}\n\nGuarde esta clave; si la olvida, pídala a la Junta. Gracias.'},
   {clave: 'whatsapp_tpl_acceso_clave', nombre: 'Clave nueva del portal', vars: '{nombre}, {id}, {portal}, {correo}, {clave}',
@@ -1052,6 +1056,8 @@ async function arrancarConDatos(){
   saveFullSnapshot();
   if(puedeEditar()){
     try{ await cargarCuentas(); }catch(e){ console.error(e); }
+    try{ await cargarCobranza(); }catch(e){ console.error(e); }
+    if(Object.keys(cobranza.aptos).length) buildScene();   // distintivo ⚖️ en el edificio
     renderSidebar();   // las cuotas de la lista salen del presupuesto, que llega con las cuentas
     pintarAvisoReportados();
     if(!window.__revisandoReportados){ window.__revisandoReportados = setInterval(revisarReportados, 3 * 60 * 1000); }
@@ -1063,7 +1069,7 @@ async function arrancarConDatos(){
 // haya pagos de vecinos esperando confirmacion. Se revisa solo cada 3 minutos.
 function pintarAvisoReportados(){
   const n = puedeEditar() ? reportadosCache.length : 0;
-  document.title = (n ? '(' + n + ') ' : '') + 'HH Control';
+  pintarTituloAvisos();
   let el = document.getElementById('avisoReportados');
   if(!n){ if(el) el.remove(); return; }
   if(!el){
@@ -1099,6 +1105,8 @@ async function revisarReportados(){
   // si llego uno nuevo, el cartel vuelve a aparecer aunque se hubiera ocultado
   if(el && reportadosCache.map(p=>p.id).join() !== antes) el.style.display = '';
   pintarAvisoReportados();
+  // pagos de apartamentos en cobranza (los pudo registrar otra persona)
+  try{ await revisarCobranza(); }catch(e){ console.error(e); }
 }
 
 
@@ -1591,6 +1599,7 @@ async function avisarCobro(p){
   }catch(e){}
   avisosCobro.push(av);
   pintarAvisosCobro();
+  if(enCobranza(p.apartamento_id)){ try{ await revisarCobranza(); }catch(e){ console.error(e); } }
 }
 function mensajePagoRecibido(av, apt){
   const d = findDeuda(apt);
@@ -1638,6 +1647,303 @@ function pintarAvisosCobro(){
   });
   caja.querySelector('#avisoCobrosListo').onclick = ()=>{ avisosCobro = []; pintarAvisosCobro(); };
 }
+// ----- cobranza con la abogada (sql/35) -----
+// Los apartamentos marcados llevan el distintivo ⚖️ (lista, ficha y edificio). Cada pago
+// confirmado de uno de ellos, desde la fecha en que entró a cobranza, sale en un cartel
+// morado hasta que se le avisa a la abogada (WhatsApp o "ya le avisé"), y va en Exportar.
+let cobranza = {aptos: {}, abogada: null, pagos: [], pendientes: [], avisados: {}, detalle: {}, cargada: false, error: null};
+function enCobranza(apt){
+  const id = apt && typeof apt === 'object' ? apt.id : apt;
+  return id ? cobranza.aptos[normalizeId(id)] || null : null;
+}
+async function cargarCobranza(){
+  if(!db || !puedeEditar()) return;
+  const [ab, ap] = await Promise.all([
+    db.from('cobranza_abogados').select('*').eq('activo', true).order('creado_en').limit(1),
+    db.from('cobranza_apartamentos').select('*')
+  ]);
+  if(ab.error || ap.error){ cobranza.error = (ab.error || ap.error).message; return; }
+  cobranza.error = null;
+  cobranza.abogada = (ab.data || [])[0] || null;
+  cobranza.aptos = {};
+  (ap.data || []).forEach(r=>{ cobranza.aptos[normalizeId(r.apartamento_id)] = r; });
+  cobranza.cargada = true;
+  await revisarCobranza();
+}
+async function revisarCobranza(){
+  if(!cobranza.cargada) return;
+  const filas = Object.values(cobranza.aptos);
+  const antes = cobranza.pendientes.map(p=>p.id).join();
+  if(!filas.length){ cobranza.pagos = []; cobranza.pendientes = []; cobranza.avisados = {}; pintarAvisoCobranza(); return; }
+  const desdeMin = filas.map(r=>r.desde).sort()[0];
+  const { data, error } = await db.from('pagos').select('*').eq('estado', 'confirmado')
+    .in('apartamento_id', filas.map(r=>r.apartamento_id)).gte('fecha', desdeMin).order('fecha', {ascending: false});
+  if(error) return;
+  const pagos = (data || []).filter(p=>{ const c = enCobranza(p.apartamento_id); return c && String(p.fecha) >= c.desde; });
+  const avisados = {};
+  if(pagos.length){
+    const r = await db.from('cobranza_avisos').select('*').in('pago_id', pagos.map(p=>p.id));
+    (r.data || []).forEach(a=>{ avisados[a.pago_id] = a; });
+  }
+  cobranza.pagos = pagos;
+  cobranza.avisados = avisados;
+  cobranza.pendientes = pagos.filter(p=>!avisados[p.id]);
+  // el detalle se arma antes del clic: WhatsApp tiene que abrirse sin esperas.
+  // Se rehace siempre: si se corrige o borra un pago, el reparto cambia.
+  try{ cobranza.detalle = await detallePagosDeuda(pagos); }catch(e){ console.error(e); }
+  const el = document.getElementById('avisoCobranza');
+  if(el && cobranza.pendientes.map(p=>p.id).join() !== antes) el.style.display = '';
+  pintarAvisoCobranza();
+}
+function mesCorto(ym){
+  const [a, m] = String(ym).slice(0, 7).split('-');
+  return ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][parseInt(m, 10) - 1] + '-' + a;
+}
+// qué parte de la deuda cubre cada pago: el recibo del mes o, en la deuda de apertura,
+// los meses (los pagos cubren primero el mes más viejo, igual que v_saldo_apartamento)
+async function detallePagosDeuda(pagos){
+  const out = {};
+  if(!pagos || !pagos.length) return out;
+  const trozos = arr=>{ const r = []; for(let i = 0; i < arr.length; i += 150) r.push(arr.slice(i, i + 150)); return r; };
+  let apl = [];
+  for(const t of trozos(pagos.map(p=>p.id))){
+    const r = await db.from('aplicaciones_pago').select('pago_id, recibo_id, monto').in('pago_id', t);
+    if(r.error) throw new Error('aplicaciones_pago: ' + r.error.message);
+    apl = apl.concat(r.data || []);
+  }
+  const recIds = [...new Set(apl.map(a=>a.recibo_id))];
+  let todas = [], recs = [], lineas = [];
+  for(const t of trozos(recIds)){
+    const [a, r, l] = await Promise.all([
+      db.from('aplicaciones_pago').select('pago_id, recibo_id, monto, creado_en, pagos(fecha, creado_en)').in('recibo_id', t),
+      db.from('recibos').select('id, periodo_id, monto_total').in('id', t),
+      db.from('recibo_detalle').select('id, recibo_id, monto, mes_origen').in('recibo_id', t).not('mes_origen', 'is', null)
+    ]);
+    if(a.error || r.error || l.error) throw new Error((a.error || r.error || l.error).message);
+    todas = todas.concat(a.data || []); recs = recs.concat(r.data || []); lineas = lineas.concat(l.data || []);
+  }
+  const R = {};
+  recs.forEach(r=>{ R[r.id] = r; });
+  const tramo = {};   // pago_id|recibo_id -> [inicio, fin] de lo abonado a ese recibo
+  recIds.forEach(rid=>{
+    const xs = todas.filter(x=>x.recibo_id === rid).sort((x, y)=>{
+      const px = x.pagos || {}, py = y.pagos || {};
+      return String(px.fecha).localeCompare(String(py.fecha)) || String(px.creado_en).localeCompare(String(py.creado_en))
+        || String(x.creado_en).localeCompare(String(y.creado_en));
+    });
+    let acum = 0;
+    xs.forEach(x=>{ const k = x.pago_id + '|' + rid; const ini = acum; acum += Number(x.monto); tramo[k] = [ini, acum]; });
+  });
+  const dinero = n=>'$' + (Math.round(n * 100) / 100).toFixed(2);
+  pagos.forEach(p=>{
+    const partes = [];
+    let aplicado = 0;
+    apl.filter(a=>a.pago_id === p.id)
+      .sort((x, y)=>String((R[x.recibo_id] || {}).periodo_id).localeCompare(String((R[y.recibo_id] || {}).periodo_id)))
+      .forEach(a=>{
+        const rec = R[a.recibo_id] || {};
+        aplicado += Number(a.monto);
+        const [ini, fin] = tramo[p.id + '|' + a.recibo_id] || [0, Number(a.monto)];
+        const ls = lineas.filter(l=>l.recibo_id === a.recibo_id).sort((x, y)=>String(x.mes_origen).localeCompare(String(y.mes_origen)) || String(x.id).localeCompare(String(y.id)));
+        if(ls.length){
+          let acum = 0;
+          const meses = [];
+          ls.forEach(l=>{
+            const li = acum, lf = acum + Number(l.monto);
+            acum = lf;
+            const cubre = Math.min(fin, lf) - Math.max(ini, li);
+            if(cubre > 0.005) meses.push(mesCorto(l.mes_origen) + (cubre < Number(l.monto) - 0.005 ? ' (abono ' + dinero(cubre) + ' de ' + dinero(Number(l.monto)) + ')' : ''));
+          });
+          partes.push('Deuda anterior: ' + (meses.length ? meses.join(', ') : dinero(Number(a.monto))));
+        } else {
+          const tot = Number(rec.monto_total) || 0;
+          partes.push('Recibo ' + mesCorto(rec.periodo_id) + (Number(a.monto) < tot - 0.005 ? ' (abono ' + dinero(Number(a.monto)) + ' de ' + dinero(tot) + ')' : ''));
+        }
+      });
+    const favor = Number(p.monto) - aplicado;
+    if(favor > 0.005) partes.push('Saldo a favor ' + dinero(favor));
+    out[p.id] = {texto: partes.join(' · ') || 'Sin aplicar a recibos', favor: favor > 0.005 ? favor : 0};
+  });
+  return out;
+}
+function mensajeAbogada(p){
+  const apt = apartments.find(x=>normalizeId(x.id) === normalizeId(p.apartamento_id)) || {id: p.apartamento_id};
+  const d = findDeuda(apt);
+  const debe = d ? Number(d.monto) || 0 : 0;
+  const det = cobranza.detalle[p.id];
+  return fillTemplate(plantillaWA('whatsapp_tpl_aviso_abogada'), {
+    abogada: (cobranza.abogada && cobranza.abogada.nombre) || '', id: apt.id, propietario: apt.propietario || '',
+    monto: Number(p.monto).toFixed(2), bs: Number(p.monto_bs) > 0 ? ' (' + fmtBs(Number(p.monto_bs)) + ')' : '',
+    fecha: fechaCorta(p.fecha), forma: p.forma_pago || '', referencia: p.referencia || 'sin referencia',
+    detalle: det ? det.texto : '', saldo: debe > 0.005 ? 'Saldo pendiente hoy: $' + debe.toFixed(2) + (d.meses != null ? ' (' + d.meses + ' mes(es))' : '') + '.' : 'Con este pago el apartamento queda al día.'
+  });
+}
+async function marcarAvisoAbogada(pagoId, medio){
+  const { error } = await db.from('cobranza_avisos').upsert({pago_id: pagoId, medio, avisado_en: new Date().toISOString()});
+  if(error){ alert('No se pudo marcar el aviso: ' + error.message); return false; }
+  cobranza.avisados[pagoId] = {pago_id: pagoId, medio, avisado_en: new Date().toISOString()};
+  cobranza.pendientes = cobranza.pendientes.filter(p=>p.id !== pagoId);
+  pintarAvisoCobranza();
+  return true;
+}
+// abre WhatsApp a la abogada con el pago listo; no espera nada antes de abrir
+function avisarAbogada(p, despues){
+  const ab = cobranza.abogada;
+  if(!ab || !toWhatsAppNumber(ab.telefono)){
+    alert('Falta el WhatsApp de la abogada. Cárgalo en Administración › ⚖️ Cobranza.');
+    return;
+  }
+  if(!openWhatsApp(ab.telefono, mensajeAbogada(p))) return;
+  marcarAvisoAbogada(p.id, 'whatsapp').then(ok=>{ if(ok && despues) despues(); });
+}
+function irACobranza(){
+  adminSub = 'cobranza';
+  try{ localStorage.setItem('hh_admin_sub', 'cobranza'); }catch(e){}
+  const tab = Array.from(document.querySelectorAll('.stab')).find(x=>/administraci/i.test(x.textContent));
+  if(tab) tab.click(); else renderSidebar();
+}
+function pintarAvisoCobranza(){
+  pintarTituloAvisos();
+  const pend = puedeEditar() ? cobranza.pendientes : [];
+  let el = document.getElementById('avisoCobranza');
+  if(!pend.length){ if(el) el.remove(); return; }
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'avisoCobranza';
+    const host = document.getElementById('viewport') || document.body;
+    el.style.cssText = 'position:' + (host === document.body ? 'fixed' : 'absolute') + ';bottom:120px;left:50%;transform:translateX(-50%);z-index:30;background:#7b4fb0;color:#fff;'
+      + 'font:700 13px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:9px 12px 9px 16px;border-radius:12px;'
+      + 'box-shadow:0 6px 20px rgba(40,20,70,.35);display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:max-content;max-width:calc(100% - 24px);';
+    host.appendChild(el);
+  }
+  const uno = pend.length === 1 ? pend[0] : null;
+  el.innerHTML = '<span>⚖️ ' + (uno
+      ? esc(uno.apartamento_id) + ' (en cobranza con la abogada) pagó ' + fmtMoney(Number(uno.monto)) + ' el ' + fechaCorta(uno.fecha)
+      : pend.length + ' pagos de apartamentos en cobranza sin avisar a la abogada: ' + pend.slice(0, 4).map(p=>esc(p.apartamento_id)).join(', ') + (pend.length > 4 ? '…' : ''))
+    + '</span>'
+    + (uno ? '<button id="avisoCobWa" style="background:#25d366;color:#fff;border:none;border-radius:8px;padding:5px 10px;font-weight:800;cursor:pointer;">📲 Avisar a la abogada</button>' : '')
+    + '<button id="avisoCobIr" style="background:#fff;color:#7b4fb0;border:none;border-radius:8px;padding:5px 10px;font-weight:800;cursor:pointer;">Ver</button>'
+    + '<button id="avisoCobX" title="Ocultar" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:4px 8px;cursor:pointer;">✕</button>';
+  el.querySelector('#avisoCobX').onclick = ()=>{ el.style.display = 'none'; };
+  el.querySelector('#avisoCobIr').onclick = irACobranza;
+  if(uno) el.querySelector('#avisoCobWa').onclick = ()=>avisarAbogada(uno, ()=>{ if(currentTab === 'cuentas' && adminSub === 'cobranza') renderSidebar(); });
+}
+function pintarTituloAvisos(){
+  const n = puedeEditar() ? reportadosCache.length + cobranza.pendientes.length : 0;
+  document.title = (n ? '(' + n + ') ' : '') + 'HH Control';
+}
+
+function renderCobranzaSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#7b4fb0;"><span class="tcIcono">⚖️</span>Cobranza con la abogada</h3>'
+    + '<div id="cobCont"><div class="assumption">Cargando…</div></div>';
+  body.appendChild(sec);
+  const cont = sec.querySelector('#cobCont');
+  const inp = 'width:100%;min-width:0;';
+  const pintar = ()=>{
+    if(cobranza.error){ cont.innerHTML = '<div class="assumption">No se pudo leer la cobranza: ' + escHtml(cobranza.error) + '. ¿Ya se corrió sql/35?</div>'; return; }
+    const ab = cobranza.abogada || {};
+    const asign = Object.values(cobranza.aptos).sort((x, y)=>x.apartamento_id.localeCompare(y.apartamento_id));
+    const aptDe = id=>apartments.find(x=>normalizeId(x.id) === normalizeId(id)) || {id};
+    const libres = apartments.filter(a=>!enCobranza(a)).sort((x, y)=>{
+      const dx = findDeuda(x), dy = findDeuda(y);
+      return (Number(dy && dy.monto) || 0) - (Number(dx && dx.monto) || 0) || x.id.localeCompare(y.id);
+    });
+    const pagadoDesde = id=>cobranza.pagos.filter(p=>normalizeId(p.apartamento_id) === normalizeId(id)).reduce((s, p)=>s + Number(p.monto), 0);
+    cont.innerHTML =
+      '<div class="assumption">Los apartamentos marcados llevan ⚖️ en la lista, en la ficha y en el edificio. Cada pago confirmado de uno de ellos, desde la fecha en que entró a cobranza, te sale en un aviso morado hasta que se lo avisas a la abogada.</div>'
+      // abogada
+      + '<details' + (ab.id ? '' : ' open') + ' style="margin-top:8px;"><summary style="cursor:pointer;font-weight:700;font-size:13px;">👩‍⚖️ Abogada: ' + (ab.id ? escHtml(ab.nombre) + (ab.telefono ? ' · ' + escHtml(ab.telefono) : ' · ⚠️ sin WhatsApp') : '<span style="color:var(--amber);">sin cargar</span>') + '</summary>'
+        + '<div class="form-row"><label>Nombre</label><input type="text" id="cobAbNombre" style="' + inp + '" value="' + escHtml(ab.nombre || '') + '" placeholder="Ej.: Dra. María Pérez"></div>'
+        + '<div class="form-row"><label>WhatsApp</label><input type="tel" id="cobAbTel" style="' + inp + '" value="' + escHtml(ab.telefono || '') + '" placeholder="0414-1234567"></div>'
+        + '<div class="form-row"><label>Correo</label><input type="email" id="cobAbCorreo" style="' + inp + '" value="' + escHtml(ab.correo || '') + '"></div>'
+        + '<button class="chip" id="cobAbGuardar" style="background:#7b4fb0;color:#fff;width:100%;padding:8px;">💾 Guardar datos de la abogada</button></details>'
+      // pasar un apartamento a cobranza
+      + '<div style="margin-top:12px;font-weight:700;font-size:13px;">➕ Pasar un apartamento a cobranza</div>'
+      + '<div class="form-row"><label>Apartamento</label><select id="cobApt" style="' + inp + '"><option value="">Elige…</option>'
+        + libres.map(a=>{ const d = findDeuda(a); return '<option value="' + escHtml(a.id) + '">' + escHtml(a.id) + ' · ' + escHtml(a.propietario || 'sin propietario') + (d ? ' · debe ' + fmtMoney(Number(d.monto)) : ' · al día') + '</option>'; }).join('')
+        + '</select></div>'
+      + '<div style="display:flex;gap:6px;"><div class="form-row" style="flex:1;min-width:0;flex-direction:column;align-items:stretch;"><label>Desde</label><input type="date" id="cobDesde" style="' + inp + '" value="' + hoyLocal() + '"></div>'
+        + '<div class="form-row" style="flex:2;min-width:0;flex-direction:column;align-items:stretch;"><label>Nota</label><input type="text" id="cobNota" style="' + inp + '" placeholder="Ej.: expediente, acuerdo de pago…"></div></div>'
+      + '<button class="chip" id="cobAgregar" style="background:#7b4fb0;color:#fff;width:100%;padding:8px;">⚖️ Pasar a cobranza</button>'
+      // los que estan en cobranza
+      + '<div style="margin-top:14px;font-weight:700;font-size:13px;">Apartamentos en cobranza (' + asign.length + ')</div>'
+      + (asign.length ? asign.map(r=>{
+          const a = aptDe(r.apartamento_id), d = findDeuda(a), pg = pagadoDesde(r.apartamento_id);
+          return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:2px;border-left:3px solid #7b4fb0;">'
+            + '<div style="display:flex;justify-content:space-between;gap:8px;"><b>⚖️ ' + escHtml(r.apartamento_id) + ' · ' + escHtml(a.propietario || '') + '</b>'
+              + '<span style="white-space:nowrap;"><button class="chip" data-cob-ficha="' + escHtml(r.apartamento_id) + '" title="Abrir la ficha" style="background:var(--panel2);padding:2px 7px;">🏠</button>'
+              + '<button class="chip" data-cob-quitar="' + escHtml(r.apartamento_id) + '" title="Quitar de cobranza" style="background:var(--panel2);color:var(--red);padding:2px 7px;">✕</button></span></div>'
+            + '<div style="font-size:12px;color:var(--sub);">Desde ' + fmtFechaCorta(r.desde)
+              + ' · ' + (d ? '<span style="color:var(--red);">debe ' + fmtMoney(Number(d.monto)) + (d.meses != null ? ' (' + d.meses + ' m)' : '') + '</span>' : '<span style="color:var(--green);">al día</span>')
+              + (pg > 0.005 ? ' · pagado desde entonces ' + fmtMoney(pg) : '') + '</div>'
+            + (r.nota ? '<div style="font-size:12px;">' + escHtml(r.nota) + '</div>' : '') + '</div>';
+        }).join('') : '<div class="empty">Ningún apartamento está en cobranza.</div>')
+      // pagos
+      + '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px;"><b style="font-size:13px;">Pagos desde que están en cobranza (' + cobranza.pagos.length + ')</b>'
+        + '<button class="chip" id="cobExcel" style="background:#2e7d4f;color:#fff;white-space:nowrap;">📥 Excel</button></div>'
+      + (cobranza.pagos.length ? cobranza.pagos.map(p=>{
+          const a = aptDe(p.apartamento_id), av = cobranza.avisados[p.id], det = cobranza.detalle[p.id];
+          return '<div class="comp-item" style="flex-direction:column;align-items:stretch;gap:3px;' + (av ? '' : 'border-left:3px solid #7b4fb0;') + '">'
+            + '<div style="display:flex;justify-content:space-between;gap:8px;"><b>' + escHtml(p.apartamento_id) + ' · ' + escHtml(a.propietario || '') + '</b><b style="color:var(--green);white-space:nowrap;">' + fmtMoney(Number(p.monto)) + '</b></div>'
+            + '<div style="font-size:12px;color:var(--sub);">' + fechaCorta(p.fecha) + ' · ' + escHtml(p.forma_pago || '') + (p.referencia ? ' · ref. ' + escHtml(p.referencia) : '')
+              + (Number(p.monto_bs) > 0 ? ' · ' + fmtBs(Number(p.monto_bs)) : '') + '</div>'
+            + '<div style="font-size:12px;">Paga: ' + escHtml(det ? det.texto : '…') + '</div>'
+            + (av
+                ? '<div style="font-size:11.5px;color:var(--green);">✓ Avisado a la abogada el ' + new Date(av.avisado_en).toLocaleString('es-VE', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}) + (av.medio === 'manual' ? ' (sin WhatsApp)' : ' por WhatsApp')
+                  + ' · <a href="#" data-cob-wa="' + p.id + '" style="color:var(--sub);">reenviar</a></div>'
+                : '<div style="display:flex;gap:6px;"><button class="chip" data-cob-wa="' + p.id + '" style="background:#25d366;color:#fff;flex:1;">📲 Avisar a la abogada</button>'
+                  + '<button class="chip" data-cob-manual="' + p.id + '" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);">✓ Ya le avisé</button></div>')
+            + '</div>';
+        }).join('') : '<div class="empty">Todavía no hay pagos de estos apartamentos.</div>');
+
+    const $ = id=>cont.querySelector('#' + id);
+    $('cobAbGuardar').onclick = async e=>{
+      const nombre = $('cobAbNombre').value.trim(), telefono = $('cobAbTel').value.trim();
+      if(!nombre){ alert('Escribe el nombre de la abogada.'); return; }
+      if(telefono && !toWhatsAppNumber(telefono)){ alert('El WhatsApp no parece válido. Ej.: 0414-1234567'); return; }
+      e.target.disabled = true;
+      const fila = {nombre, telefono: telefono || null, correo: $('cobAbCorreo').value.trim() || null};
+      const r = ab.id ? await db.from('cobranza_abogados').update(fila).eq('id', ab.id) : await db.from('cobranza_abogados').insert(fila);
+      e.target.disabled = false;
+      if(r.error){ alert('No se pudo guardar: ' + r.error.message); return; }
+      await cargarCobranza(); pintar();
+    };
+    $('cobAgregar').onclick = async e=>{
+      const id = $('cobApt').value;
+      if(!id){ alert('Elige el apartamento.'); return; }
+      if(!$('cobDesde').value){ alert('Pon la fecha desde la que la abogada lleva el caso.'); return; }
+      e.target.disabled = true;
+      const { error } = await db.from('cobranza_apartamentos').insert({apartamento_id: id, desde: $('cobDesde').value,
+        nota: $('cobNota').value.trim() || null, abogado_id: ab.id || null});
+      e.target.disabled = false;
+      if(error){ alert('No se pudo guardar: ' + error.message); return; }
+      await cargarCobranza(); pintar(); buildScene();
+    };
+    cont.querySelectorAll('[data-cob-quitar]').forEach(b=>{ b.onclick = async ()=>{
+      if(!confirm('¿Quitar ' + b.dataset.cobQuitar + ' de la cobranza con la abogada? Sus pagos dejan de avisarse.')) return;
+      const { error } = await db.from('cobranza_apartamentos').delete().eq('apartamento_id', b.dataset.cobQuitar);
+      if(error){ alert('No se pudo quitar: ' + error.message); return; }
+      await cargarCobranza(); pintar(); buildScene();
+    }; });
+    cont.querySelectorAll('[data-cob-ficha]').forEach(b=>{ b.onclick = ()=>{ const a = aptDe(b.dataset.cobFicha); if(a.torre) openFichaApt(a); }; });
+    cont.querySelectorAll('[data-cob-wa]').forEach(b=>{ b.onclick = ev=>{
+      ev.preventDefault();
+      const p = cobranza.pagos.find(x=>x.id === b.dataset.cobWa);
+      if(p) avisarAbogada(p, pintar);
+    }; });
+    cont.querySelectorAll('[data-cob-manual]').forEach(b=>{ b.onclick = async ()=>{ if(await marcarAvisoAbogada(b.dataset.cobManual, 'manual')) pintar(); }; });
+    $('cobExcel').onclick = async e=>{
+      const t = e.target.textContent; e.target.disabled = true; e.target.textContent = '⏳';
+      try{ await exportarExcel(['cobranza'], null, null, 'hatillo_hill_cobranza_abogada_' + hoyLocal() + '.xlsx'); }
+      catch(err){ alert('No se pudo exportar: ' + err.message); }
+      e.target.disabled = false; e.target.textContent = t;
+    };
+  };
+  cargarCobranza().then(pintar).catch(e=>{ cobranza.error = e.message; pintar(); });
+}
+
 function diasDesdeEnvio(apt){
   if(!apt.ultimo_envio) return Infinity;
   return (Date.now() - new Date(apt.ultimo_envio).getTime()) / 86400000;
@@ -2020,7 +2326,8 @@ function buildScene(){
         objectsGroup.add(mesh);
         raycastTargets.push(mesh);
         // lineas de borde brillantes (estilo plano/holograma arquitectonico)
-        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({color: isSel?0xffffff:0x9fd4ff, transparent:true, opacity: isSel?0.95:0.75}));
+        const cobr = !isSel && enCobranza(apt);
+        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({color: isSel?0xffffff:(cobr?0xc08cff:0x9fd4ff), transparent:true, opacity: isSel||cobr?0.95:0.75}));
         edges.position.copy(mesh.position);
         objectsGroup.add(edges);
 
@@ -4914,7 +5221,8 @@ const AUD_TABLAS = {
   proveedores:'Proveedores', productos:'Productos', inventario_movimientos:'Movimientos de inventario',
   solicitudes_material:'Solicitudes de material', proyectos:'Proyectos', proyecto_aportes:'Aportes a proyectos',
   proyecto_abonos:'Abonos a proyectos', configuracion:'Configuración', notas:'Notas', avisos_plantillas:'Plantillas de avisos',
-  datos_pago_portal:'Datos de pago del portal'
+  datos_pago_portal:'Datos de pago del portal', cobranza_abogados:'Abogada de cobranza',
+  cobranza_apartamentos:'Apartamentos en cobranza', cobranza_avisos:'Avisos a la abogada'
 };
 const AUD_ACCION = {INSERT:['Creó','var(--green)'], UPDATE:['Cambió','#3b78b5'], DELETE:['Borró','var(--red)']};
 const AUD_IGNORAR = ['actualizado_en', 'creado_en', 'importado_en'];
@@ -5189,6 +5497,7 @@ const SUBMENU_ADMIN = [
   ['banco',       '🏦 Banco',       '#2f8a8a', 'Banco'],
   ['inventario',  '📦 Inventario',  '#6b7f3a', 'Inventario'],
   ['avisos',      '📣 Avisos',      '#c9772f', 'Avisos a los propietarios'],
+  ['cobranza',    '⚖️ Cobranza',    '#7b4fb0', 'Cobranza con la abogada'],
   ['notas',       '📝 Notas',       '#8a7a3b', 'Notas de la junta'],
   ['auditoria',   '🕵️ Auditoría',   '#4a4a6a', 'Auditoría'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
@@ -5212,6 +5521,7 @@ function renderCuentasTab(body){
   if(adminSub === 'proveedores') renderProveedoresSeccion(body);
   if(adminSub === 'inventario') renderInventarioSeccion(body);
   if(adminSub === 'notas') renderNotasSeccion(body);
+  if(adminSub === 'cobranza') renderCobranzaSeccion(body);
   if(adminSub === 'auditoria') renderAuditoriaSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
@@ -5256,7 +5566,8 @@ function renderCuentasTab(body){
   menu.className = 'subMenu';
   menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verUsuarios) && (k !== 'auditoria' || verAuditoria)).map(([k, etiqueta, color])=>
     '<button style="--c:' + color + ';"' + (k===adminSub ? ' class="activo"' : '') + ' data-sub-ir="' + k + '">' + etiqueta
-    + (k === 'cobros' && reportadosCache.length ? ' <span class="subBadge">' + reportadosCache.length + '</span>' : '') + '</button>').join('');
+    + (k === 'cobros' && reportadosCache.length ? ' <span class="subBadge">' + reportadosCache.length + '</span>' : '')
+    + (k === 'cobranza' && cobranza.pendientes.length ? ' <span class="subBadge">' + cobranza.pendientes.length + '</span>' : '') + '</button>').join('');
   body.insertBefore(menu, body.firstChild);
   const ir = k=>{
     adminSub = k;
@@ -6628,6 +6939,44 @@ async function xlsInventario(desde, hasta){
   return [['Existencias', existencias], ['Movimientos inventario', movimientos], ['Solicitudes de material', solicitudes]];
 }
 
+// apartamentos en cobranza con la abogada y cada pago que hicieron desde que entraron
+async function xlsCobranza(desde, hasta){
+  const [aptos, asign, abogs, saldos, avisos] = await Promise.all([
+    xlsAptos(), xlsTraer('cobranza_apartamentos', '*', 'apartamento_id'), xlsTraer('cobranza_abogados', '*'),
+    xlsTraer('v_saldo_apartamento', 'apartamento_id, saldo, recibos_pendientes'), xlsTraer('cobranza_avisos', '*')
+  ]);
+  const A = {}, AB = {}, S = {}, AV = {};
+  asign.forEach(r=>{ A[r.apartamento_id] = r; });
+  abogs.forEach(r=>{ AB[r.id] = r.nombre; });
+  saldos.forEach(r=>{ S[r.apartamento_id] = r; });
+  avisos.forEach(r=>{ AV[r.pago_id] = r; });
+  let pagos = [];
+  if(asign.length){
+    const r = await db.from('pagos').select('*').eq('estado', 'confirmado').in('apartamento_id', Object.keys(A)).order('fecha');
+    if(r.error) throw new Error('pagos: ' + r.error.message);
+    pagos = (r.data || []).filter(p=>String(p.fecha) >= A[p.apartamento_id].desde);
+  }
+  const enRango = pagos.filter(p=>xlsEnRango(p.fecha, desde, hasta))
+    .sort((x, y)=>String(x.fecha).localeCompare(String(y.fecha)) || x.apartamento_id.localeCompare(y.apartamento_id));
+  const det = await detallePagosDeuda(enRango);
+  const filas = enRango.map(p=>({
+    'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id), 'Fecha': xlsFecha(p.fecha),
+    'Monto $': xlsNum(p.monto), 'Monto Bs': Number(p.monto_bs) > 0 ? xlsNum(p.monto_bs) : '', 'Tasa BCV': p.tasa_bcv ? Number(p.tasa_bcv) : '',
+    'Forma de pago': p.forma_pago || '', 'Banco': p.banco || '', 'Referencia': p.referencia || '',
+    'Qué paga': (det[p.id] || {}).texto || '', 'Saldo a favor $': (det[p.id] || {}).favor ? xlsNum(det[p.id].favor) : '',
+    'Avisado a la abogada': AV[p.id] ? xlsFecha(String(AV[p.id].avisado_en).slice(0, 10)) : 'No'
+  }));
+  const resumen = asign.map(r=>{
+    const a = aptos[r.apartamento_id] || {}, s = S[r.apartamento_id] || {};
+    const suyos = pagos.filter(p=>p.apartamento_id === r.apartamento_id);
+    return {'Apartamento': r.apartamento_id, 'Propietario': a.propietario || '', 'Teléfono': a.telefono || '', 'Correo': a.correo || '',
+      'Abogada': AB[r.abogado_id] || '', 'En cobranza desde': xlsFecha(r.desde), 'Nº de pagos': suyos.length,
+      'Pagado desde entonces $': xlsNum(suyos.reduce((t, p)=>t + Number(p.monto), 0)),
+      'Meses pendientes': Number(s.recibos_pendientes) || 0, 'Deuda actual $': xlsNum(Math.max(0, Number(s.saldo) || 0)), 'Nota': r.nota || ''};
+  });
+  return [['Pagos en cobranza', xlsConTotal(filas, 'Apartamento')], ['Apartamentos en cobranza', xlsConTotal(resumen, 'Apartamento')]];
+}
+
 // [clave, etiqueta, descripcion, funcion, se filtra por fechas]
 const XLS_REPORTES = [
   ['propietarios', '👤 Propietarios', 'Todos los datos de cada apartamento: contactos, inquilinos, puestos, maleteros, m², alícuota y saldo.', xlsPropietarios, false],
@@ -6636,7 +6985,8 @@ const XLS_REPORTES = [
   ['cobros', '💵 Historial de cobros', 'Todo lo recibido, pago por pago con fecha y forma de pago: condominio y proyectos, con totales por forma de pago.', xlsCobros, true],
   ['egresos', '💸 Historial de pagos realizados', 'Pagos a proveedores, nómina y aportes, y los gastos registrados con lo que falta por pagar.', xlsPagosRealizados, true],
   ['proveedores', '🏪 Proveedores', 'Ficha de cada proveedor (RIF, teléfono, correo, contacto) con lo facturado, lo pagado y sus facturas.', xlsProveedores, false],
-  ['inventario', '📦 Inventario', 'Existencias, todos los movimientos numerados y las solicitudes de material.', xlsInventario, true]
+  ['inventario', '📦 Inventario', 'Existencias, todos los movimientos numerados y las solicitudes de material.', xlsInventario, true],
+  ['cobranza', '⚖️ Pagos en cobranza (abogada)', 'Cada pago de los apartamentos que lleva la abogada: propietario, apartamento, referencia, monto y qué recibos o meses paga, más el resumen de cada caso.', xlsCobranza, true]
 ];
 async function exportarExcel(claves, desde, hasta, archivo){
   const wb = XLSX.utils.book_new();
@@ -7452,14 +7802,18 @@ function renderList(body, q){
     const projDebtHtml = projDebts.map(pd=>'<div class="meta" style="color:#c9772f;">'+esc(pd.nombre)+': $'+pd.monto.toFixed(2)+' pendiente</div>').join('');
     const dIcon = tieneDeuda ? '<span class="dIcon" title="Apartamento con deuda">D</span>' : '';
     const shellyIcon = a.shelly ? '<span class="shellyIcon" title="Ya tiene la app Shelly">✓</span>' : '';
+    const cob = enCobranza(a);
+    const cobIcon = cob ? '<span class="cobIcon" title="En cobranza con la abogada">⚖️</span>' : '';
+    const cobHtml = cob ? '<div class="meta" style="color:#9b6fd6;font-weight:700;">⚖️ En cobranza con la abogada desde ' + fmtFechaCorta(cob.desde) + '</div>' : '';
     const vencido = tieneDeuda && diasDesdeEnvio(a) >= recordatorioFrecuenciaDias;
     const bellHtml = vencido ? '<span title="Toca recordar" style="margin-left:5px;">🔔</span>' : '';
     const envioHtml = a.ultimo_envio ? '<div class="meta">Último WhatsApp: hace '+Math.floor(diasDesdeEnvio(a))+' día(s)</div>' : '';
     const alquiladoHtml = a.alquilado ? '<div class="meta" style="color:var(--amber);">🏠 Alquilado'+(a.inquilino_nombre?' · Inquilino: '+esc(a.inquilino_nombre):'')+'</div>' : '';
-    card.innerHTML = '<div class="idrow"><span class="idlabel">'+dIcon+shellyIcon+a.id+bellHtml+'</span>'+
+    if(cob) card.style.borderLeft = '3px solid #7b4fb0';
+    card.innerHTML = '<div class="idrow"><span class="idlabel">'+dIcon+cobIcon+shellyIcon+a.id+bellHtml+'</span>'+
       '<span class="badge '+estadoBadgeClass(a.estado)+'">'+estadoLabel(a.estado)+'</span></div>'+
       '<div class="owner">'+(a.propietario||'Sin propietario asignado')+'</div>'+
-      '<div class="meta">'+(a.total_m2||'-')+' m² · Cuota mensual $'+fmtCuota(cuotasApt(a).mensual)+'</div>'+deudaHtml+projDebtHtml+alquiladoHtml+envioHtml;
+      '<div class="meta">'+(a.total_m2||'-')+' m² · Cuota mensual $'+fmtCuota(cuotasApt(a).mensual)+'</div>'+cobHtml+deudaHtml+projDebtHtml+alquiladoHtml+envioHtml;
     card.onclick = ()=>{ openFichaApt(a); };
 
     const btnRow = document.createElement('div');
@@ -7611,6 +7965,9 @@ function renderFichaResumen(pane){
     + '<div style="font-size:12px;color:var(--sub);margin:2px 0 10px;">Torre ' + esc(apt.torre) + ' · Piso ' + esc(apt.piso)
       + (apt.alicuota!=null ? ' · Alícuota ' + apt.alicuota + '%' : '')
       + (apt.alquilado ? ' · 🏠 Alquilado' : '') + '</div>'
+    + (enCobranza(apt) ? '<div style="background:rgba(123,79,176,.15);border:1px solid #7b4fb0;color:#b48ae6;border-radius:10px;padding:7px 10px;margin-bottom:8px;font-size:12.5px;font-weight:700;">⚖️ En cobranza con la abogada'
+        + (cobranza.abogada ? ' (' + escHtml(cobranza.abogada.nombre) + ')' : '') + ' desde ' + fmtFechaCorta(enCobranza(apt).desde)
+        + (enCobranza(apt).nota ? '<div style="font-weight:400;color:var(--sub);">' + escHtml(enCobranza(apt).nota) + '</div>' : '') + '</div>' : '')
     + (d
         ? '<div class="fichaDeuda debe"><span>Debe al condominio' + (d.meses!=null ? ' · ' + d.meses + ' recibo(s)' : '')
           + '</span><span class="monto">' + fmtMoney(d.monto) + '</span></div>'
