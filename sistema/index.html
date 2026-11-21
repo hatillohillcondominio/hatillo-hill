@@ -6130,6 +6130,7 @@ const SUBMENU_ADMIN = [
   ['avisos',      '📣 Avisos',      '#c9772f', 'Avisos a los propietarios'],
   ['cobranza',    '⚖️ Cobranza',    '#7b4fb0', 'Cobranza con la abogada'],
   ['notas',       '📝 Notas',       '#8a7a3b', 'Notas de la junta'],
+  ['calculadora', '🧮 Calculadora', '#5a6b7b', 'Calculadora'],
   ['auditoria',   '🕵️ Auditoría',   '#4a4a6a', 'Auditoría'],
   ['estados',     '📑 Estados de cuenta', '#1f6f8b', 'Estados de cuenta'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
@@ -6164,6 +6165,7 @@ function renderCuentasTab(body){
   if(adminSub === 'cobranza') renderCobranzaSeccion(body);
   if(adminSub === 'auditoria') renderAuditoriaSeccion(body);
   if(adminSub === 'estados') renderEstadosSeccion(body);
+  if(adminSub === 'calculadora') renderCalculadoraSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Otros ingresos': 'cobros', 'Cuentas del mes': 'cabecera'};
@@ -8473,6 +8475,148 @@ function renderEstadosSeccion(body){
   ecCache = null;
   pintar();
   pintarFlujo();
+}
+
+// =====================================================================
+// 🧮 HERRAMIENTAS › Calculadora (con convertidor $ ↔ Bs a la tasa del día)
+// =====================================================================
+// evalúa + − × ÷ % y paréntesis sin usar eval
+function calcEvaluar(txt){
+  const s = String(txt).replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-').replace(/,/g, '.').replace(/\s+/g, '');
+  let i = 0;
+  const num = ()=>{
+    const m = /^\d*\.?\d+(e[+-]?\d+)?/i.exec(s.slice(i));
+    if(!m) throw new Error('Expresión incompleta');
+    i += m[0].length;
+    let v = parseFloat(m[0]);
+    if(s[i] === '%'){ i++; v = v / 100; }
+    return v;
+  };
+  const factor = ()=>{
+    if(s[i] === '-'){ i++; return -factor(); }
+    if(s[i] === '+'){ i++; return factor(); }
+    if(s[i] === '('){
+      i++;
+      const v = suma();
+      if(s[i] !== ')') throw new Error('Falta cerrar un paréntesis');
+      i++;
+      if(s[i] === '%'){ i++; return v / 100; }
+      return v;
+    }
+    return num();
+  };
+  const producto = ()=>{
+    let v = factor();
+    while(s[i] === '*' || s[i] === '/'){
+      const op = s[i++], d = factor();
+      if(op === '/' && d === 0) throw new Error('No se puede dividir entre cero');
+      v = op === '*' ? v * d : v / d;
+    }
+    return v;
+  };
+  const suma = ()=>{
+    let v = producto();
+    while(s[i] === '+' || s[i] === '-'){
+      const op = s[i++];
+      // 100 + 10% = 110 (como las calculadoras de bolsillo)
+      const ini = i, d = producto();
+      const esPct = /%$/.test(s.slice(ini, i)) && !/[*/]/.test(s.slice(ini, i));
+      const dd = esPct ? v * d : d;
+      v = op === '+' ? v + dd : v - dd;
+    }
+    return v;
+  };
+  if(!s) return 0;
+  const v = suma();
+  if(i < s.length) throw new Error('No entiendo "' + s.slice(i) + '"');
+  if(!isFinite(v)) throw new Error('Resultado no válido');
+  return Math.round(v * 1e10) / 1e10;
+}
+let calcHistorial = [];
+try{ calcHistorial = JSON.parse(localStorage.getItem('hh_calc_hist') || '[]'); }catch(e){ calcHistorial = []; }
+const calcFmt = n=>Number(n).toLocaleString('es-VE', {maximumFractionDigits: 10});
+function renderCalculadoraSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '14px';
+  const teclas = [['C', '⌫', '%', '÷'], ['7', '8', '9', '×'], ['4', '5', '6', '−'], ['1', '2', '3', '+'], ['(', '0', ',', ')'], ['±', '=']];
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#5a6b7b;"><span class="tcIcono">🧮</span>Calculadora</h3>'
+    + '<div style="max-width:380px;">'
+    + '<input type="text" id="calcExpr" autocomplete="off" inputmode="decimal" placeholder="Escribe o toca: 1250 × 12 − 10%"'
+      + ' style="width:100%;font-size:18px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--panel2);color:var(--text);text-align:right;">'
+    + '<div id="calcRes" style="text-align:right;font-size:26px;font-weight:800;margin:6px 4px 10px;min-height:32px;">0</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">'
+    + teclas.map(f=>f.map(t=>'<button class="btn" data-calc="' + t + '" style="padding:12px 0;font-size:17px;' + (t === '=' ? 'grid-column:span 3;background:var(--accent);color:#fff;' : /[÷×−+%]/.test(t) ? 'color:var(--accent);font-weight:800;' : t === 'C' ? 'color:var(--red);' : '') + '">' + t + '</button>').join('')).join('')
+    + '</div>'
+    + '<h3 class="section" style="margin-top:16px;">💱 Dólares y bolívares</h3>'
+    + '<div class="form-row two"><div><label>Fecha de la tasa</label><input type="date" id="calcFecha" value="' + new Date().toLocaleDateString('en-CA', {timeZone: 'America/Caracas'}) + '"></div>'
+      + '<div><label>Tasa BCV (Bs por $)</label><input type="number" step="0.0001" id="calcTasa"></div></div>'
+    + '<div class="form-row two"><div><label>Dólares ($)</label><input type="number" step="0.01" id="calcUsd"></div>'
+      + '<div><label>Bolívares (Bs)</label><input type="number" step="0.01" id="calcBs"></div></div>'
+    + '<button class="chip" id="calcUsar" style="width:100%;padding:7px;">⬆️ Usar el resultado de la calculadora como dólares</button>'
+    + '<h3 class="section" style="margin-top:16px;">🕘 Historial</h3><div id="calcHist"></div>'
+    + '</div>';
+  body.appendChild(sec);
+  const $ = id=>sec.querySelector('#' + id);
+  const expr = $('calcExpr'), res = $('calcRes');
+  let ultimo = 0;
+  const previa = ()=>{
+    try{ ultimo = calcEvaluar(expr.value); res.textContent = calcFmt(ultimo); res.style.color = 'var(--text)'; }
+    catch(e){ res.textContent = expr.value ? '…' : '0'; res.style.color = 'var(--sub)'; }
+  };
+  const pintarHist = ()=>{
+    $('calcHist').innerHTML = calcHistorial.length
+      ? calcHistorial.map((h, i)=>'<div class="comp-item" data-calc-h="' + i + '" style="cursor:pointer;"><span class="t" style="color:var(--sub);">' + esc(h.e) + ' =</span><b>' + esc(calcFmt(h.r)) + '</b></div>').join('')
+        + '<button class="chip" id="calcBorrarHist" style="width:100%;margin-top:6px;">Borrar historial</button>'
+      : '<div class="empty">Las cuentas que hagas quedan aquí (solo en esta computadora). Toca una para reusarla.</div>';
+    sec.querySelectorAll('[data-calc-h]').forEach(el=>{ el.onclick = ()=>{ expr.value = calcFmt(calcHistorial[el.dataset.calcH].r).replace(/\./g, ''); previa(); expr.focus(); }; });
+    const b = $('calcBorrarHist');
+    if(b) b.onclick = ()=>{ calcHistorial = []; try{ localStorage.removeItem('hh_calc_hist'); }catch(e){} pintarHist(); };
+  };
+  const igual = ()=>{
+    try{
+      const r = calcEvaluar(expr.value);
+      if(expr.value.trim()){
+        calcHistorial.unshift({e: expr.value.trim(), r});
+        calcHistorial = calcHistorial.slice(0, 20);
+        try{ localStorage.setItem('hh_calc_hist', JSON.stringify(calcHistorial)); }catch(e){}
+      }
+      expr.value = String(r).replace('.', ',');
+      previa(); pintarHist();
+    }catch(e){ res.textContent = e.message; res.style.color = 'var(--red)'; }
+  };
+  const tecla = t=>{
+    if(t === 'C'){ expr.value = ''; }
+    else if(t === '⌫'){ expr.value = expr.value.slice(0, -1); }
+    else if(t === '='){ igual(); return; }
+    else if(t === '±'){ expr.value = expr.value.trim().startsWith('-') ? expr.value.trim().slice(1) : '-(' + expr.value + ')'; }
+    else expr.value += t;
+    previa();
+  };
+  sec.querySelectorAll('[data-calc]').forEach(b=>{ b.onclick = ()=>{ tecla(b.dataset.calc); }; });
+  expr.oninput = previa;
+  expr.onkeydown = e=>{
+    if(e.key === 'Enter' || e.key === '='){ e.preventDefault(); igual(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); expr.value = ''; previa(); }
+    else if(e.key === '*'){ e.preventDefault(); expr.value += '×'; previa(); }
+    else if(e.key === '/'){ e.preventDefault(); expr.value += '÷'; previa(); }
+  };
+  // convertidor
+  const r2 = n=>Math.round(n * 100) / 100;
+  const deUsd = ()=>{ const t = parseFloat($('calcTasa').value), u = parseFloat($('calcUsd').value); $('calcBs').value = t > 0 && isFinite(u) ? r2(u * t) : ''; };
+  const deBs = ()=>{ const t = parseFloat($('calcTasa').value), b = parseFloat($('calcBs').value); $('calcUsd').value = t > 0 && isFinite(b) ? r2(b / t) : ''; };
+  $('calcUsd').oninput = deUsd;
+  $('calcBs').oninput = deBs;
+  $('calcTasa').oninput = deUsd;
+  const buscarTasa = async ()=>{
+    const t = await tasaDelDia($('calcFecha').value).catch(()=>null);
+    if(t){ $('calcTasa').value = t.tasa; deUsd(); }
+    else if(tasaDia && !$('calcTasa').value){ $('calcTasa').value = tasaDia; deUsd(); }
+  };
+  $('calcFecha').onchange = buscarTasa;
+  $('calcUsar').onclick = ()=>{ $('calcUsd').value = r2(ultimo); deUsd(); };
+  buscarTasa();
+  previa(); pintarHist();
+  setTimeout(()=>expr.focus(), 50);
 }
 
 async function exportarExcel(claves, desde, hasta, archivo){
@@ -12326,39 +12470,68 @@ checkMobile();
     try{ verA = tieneRol('admin', 'junta'); }catch(e){}
     return SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verU) && (k !== 'auditoria' || verA));
   }
-  let adminAbierto = null;
+  // grupos del menú: cada uno se despliega solo cuando se toca
+  const NAV_GRUPOS = [
+    {k: 'admin', icono: '💰', nombre: 'Administración', subs: ['gastos', 'nomina', 'recibos', 'cobros', 'pagos', 'proveedores', 'inventario', 'avisos', 'cobranza', 'exportar']},
+    {k: 'finanzas', icono: '📊', nombre: 'Finanzas', subs: ['estados', 'presupuesto', 'banco']},
+    {k: 'herramientas', icono: '🧰', nombre: 'Herramientas', subs: ['notas', 'calculadora']},
+    {k: 'config', icono: '⚙️', nombre: 'Configuración', subs: ['@config', 'usuarios', 'auditoria']}
+  ];
+  const grupoDeSub = k=>NAV_GRUPOS.find(g=>g.subs.includes(k));
+  const grupoActual = ()=>currentTab === 'config' ? 'config' : currentTab === 'cuentas' ? (grupoDeSub(adminSub) || {}).k : null;
+  let abiertos = new Set();
   function pintarMenu(){
-    const abierto = adminAbierto === null ? currentTab === 'cuentas' : adminAbierto;
+    const tabs = pestanas();
+    const hayAdmin = tabs.some(p=>p.k === 'cuentas'), hayConfig = tabs.some(p=>p.k === 'config');
+    const subs = subsAdmin();
+    const enCaja = currentTab === 'cuentas' && adminSub === 'banco' && bancoVista === 'caja';
+    const itemSub = k=>{
+      if(k === '@config') return hayConfig ? '<button class="navItem' + (currentTab === 'config' ? ' activo' : '') + '" data-nav-tab="config"><span class="ni">⚙️</span>General</button>' : '';
+      const s = subs.find(x=>x[0] === k);
+      if(!s) return '';
+      const [, etiqueta, color] = s;
+      const m = etiqueta.match(/^(\S+)\s+(.*)$/) || [null, '', etiqueta];
+      const n = avisosDeSub(k);
+      return '<button class="navItem' + (currentTab === 'cuentas' && adminSub === k && !(k === 'banco' && enCaja) ? ' activo' : '') + '" style="--c:' + color + ';" data-nav-sub="' + k + '"><span class="ni">' + m[1] + '</span>' + m[2]
+        + (n ? ' <span class="subBadge" style="margin-left:auto;">' + n + '</span>' : '') + '</button>'
+        + (k === 'banco' ? '<button class="navItem' + (enCaja ? ' activo' : '') + '" style="--c:' + color + ';padding-left:28px;" data-nav-sub="banco" data-nav-caja="1"><span class="ni">💵</span>Caja (efectivo)</button>' : '');
+    };
+    const grupo = (k, icono, nombre, html, badge)=>{
+      if(!html) return '';
+      const ab = abiertos.has(k);
+      return '<button class="navItem' + (ab ? ' abierto' : '') + (!ab && grupoActual() === k ? ' activo' : '') + '" data-nav-grupo="' + k + '"><span class="ni">' + icono + '</span>' + nombre
+        + (badge ? ' <span class="subBadge">' + badge + '</span>' : '') + '<span class="chev">▶</span></button>'
+        + '<div class="navSub' + (ab ? ' open' : '') + '">' + html + '</div>';
+    };
     let h = '<div class="navGrupo">Secciones</div>';
-    pestanas().forEach(p=>{
-      if(p.k === 'cuentas'){
-        h += '<button class="navItem' + (abierto ? ' abierto' : '') + (currentTab === 'cuentas' && !abierto ? ' activo' : '') + '" data-nav-admin><span class="ni">' + p.icono + '</span>' + p.nombre + '<span class="chev">▶</span></button>'
-          + '<div class="navSub' + (abierto ? ' open' : '') + '">'
-          + subsAdmin().map(([k, etiqueta, color])=>{
-              const m = etiqueta.match(/^(\S+)\s+(.*)$/) || [null, '', etiqueta];
-              const enCaja = currentTab === 'cuentas' && adminSub === 'banco' && bancoVista === 'caja';
-              const n = avisosDeSub(k);
-              return '<button class="navItem' + (currentTab === 'cuentas' && adminSub === k && !(k === 'banco' && enCaja) ? ' activo' : '') + '" style="--c:' + color + ';" data-nav-sub="' + k + '"><span class="ni">' + m[1] + '</span>' + m[2]
-                + (n ? ' <span class="subBadge" style="margin-left:auto;">' + n + '</span>' : '') + '</button>'
-                + (k === 'banco' ? '<button class="navItem' + (enCaja ? ' activo' : '') + '" style="--c:' + color + ';padding-left:28px;" data-nav-sub="banco" data-nav-caja="1"><span class="ni">💵</span>Caja (efectivo)</button>' : '');
-            }).join('')
-          + '</div>';
-      } else {
-        h += '<button class="navItem' + (currentTab === p.k ? ' activo' : '') + '" data-nav-tab="' + p.k + '"><span class="ni">' + p.icono + '</span>' + p.nombre + '</button>';
-      }
+    tabs.filter(p=>!['cuentas', 'config', 'editar'].includes(p.k)).forEach(p=>{
+      h += '<button class="navItem' + (currentTab === p.k ? ' activo' : '') + '" data-nav-tab="' + p.k + '"><span class="ni">' + p.icono + '</span>' + p.nombre + '</button>';
     });
-    h += '<div class="navGrupo">Edificio</div>'
-      + '<button class="navItem' + (modo === 'medio' ? ' activo' : '') + '" data-nav-edif="medio"><span class="ni">🏢</span>Media pantalla</button>'
-      + '<button class="navItem' + (modo === 'mini' ? ' activo' : '') + '" data-nav-edif="mini"><span class="ni">🔳</span>Miniatura</button>'
-      + '<button class="navItem' + (modo === 'oculto' ? ' activo' : '') + '" data-nav-edif="oculto"><span class="ni">🙈</span>Ocultar</button>'
-      + '<div class="navGrupo" id="navRespaldo">Respaldo</div>';
+    h += '<div class="navGrupo">Gestión</div>';
+    NAV_GRUPOS.forEach(g=>{
+      if(!hayAdmin && g.k !== 'config') return;
+      const html = g.subs.map(itemSub).join('');
+      const badge = g.subs.reduce((s, k)=>s + (k[0] === '@' ? 0 : avisosDeSub(k)), 0);
+      h += grupo(g.k, g.icono, g.nombre, html, abiertos.has(g.k) ? 0 : badge);
+    });
+    h += '<div class="navGrupo">Vista</div>'
+      + grupo('edificio', '🏢', 'Edificio',
+          '<button class="navItem' + (modo === 'medio' ? ' activo' : '') + '" data-nav-edif="medio"><span class="ni">🏢</span>Media pantalla</button>'
+        + '<button class="navItem' + (modo === 'mini' ? ' activo' : '') + '" data-nav-edif="mini"><span class="ni">🔳</span>Miniatura</button>'
+        + '<button class="navItem' + (modo === 'oculto' ? ' activo' : '') + '" data-nav-edif="oculto"><span class="ni">🙈</span>Ocultar</button>')
+      + '<button class="navItem' + (abiertos.has('respaldo') ? ' abierto' : '') + '" data-nav-grupo="respaldo" id="navRespaldo"><span class="ni">💾</span>Respaldo<span class="chev">▶</span></button>'
+      + '<div class="navSub' + (abiertos.has('respaldo') ? ' open' : '') + '" id="navRespaldoSub"></div>';
     cuerpo.innerHTML = h;
     // los botones de respaldo conservan sus eventos: se mudan al cajon
-    const ancla = cuerpo.querySelector('#navRespaldo');
-    ['localBackupBar', 'importBackupBar'].forEach(id=>{ const el = document.getElementById(id); if(el) cuerpo.appendChild(el); });
-    if(!cuerpo.querySelector('.chipbar:not([style*="display: none"])')) ancla.style.display = 'none';
+    const subResp = cuerpo.querySelector('#navRespaldoSub');
+    ['localBackupBar', 'importBackupBar'].forEach(id=>{ const el = document.getElementById(id); if(el) subResp.appendChild(el); });
+    if(!subResp.querySelector('.chipbar:not([style*="display: none"])')) cuerpo.querySelector('#navRespaldo').style.display = 'none';
     cuerpo.querySelectorAll('[data-nav-tab]').forEach(b=>{ b.onclick = ()=>{ currentTab = b.dataset.navTab; cerrar(); renderSidebar(); irArriba(); }; });
-    cuerpo.querySelector('[data-nav-admin]') && (cuerpo.querySelector('[data-nav-admin]').onclick = ()=>{ adminAbierto = !abierto; pintarMenu(); });
+    cuerpo.querySelectorAll('[data-nav-grupo]').forEach(b=>{ b.onclick = ()=>{
+      const k = b.dataset.navGrupo;
+      abiertos.has(k) ? abiertos.delete(k) : abiertos.add(k);
+      pintarMenu();
+    }; });
     cuerpo.querySelectorAll('[data-nav-sub]').forEach(b=>{ b.onclick = ()=>{
       adminSub = b.dataset.navSub;
       try{ localStorage.setItem('hh_admin_sub', adminSub); }catch(e){}
@@ -12371,7 +12544,8 @@ checkMobile();
     cuerpo.querySelectorAll('[data-nav-edif]').forEach(b=>{ b.onclick = ()=>{ ponerModo(b.dataset.navEdif); cerrar(); }; });
   }
   function irArriba(){ document.getElementById('sidebarBody').scrollTop = 0; }
-  function abrir(){ adminAbierto = null; pintarMenu(); drawer.classList.add('open'); velo.classList.add('open'); }
+  // al abrir el menú solo se ve desplegado el grupo donde uno está
+  function abrir(){ abiertos = new Set(grupoActual() ? [grupoActual()] : []); pintarMenu(); drawer.classList.add('open'); velo.classList.add('open'); }
   function cerrar(){ drawer.classList.remove('open'); velo.classList.remove('open'); }
   btnMenu.onclick = ()=>{ drawer.classList.contains('open') ? cerrar() : abrir(); };
   velo.onclick = cerrar;
@@ -12380,8 +12554,10 @@ checkMobile();
 
   // el titulo de arriba sigue a la seccion abierta
   function pintarTitulo(){
-    const p = pestanas().find(x=>x.k === currentTab) || {icono: '📋', nombre: 'Lista'};
+    let p = pestanas().find(x=>x.k === currentTab) || {icono: '📋', nombre: 'Lista'};
     let sub = '';
+    const g = currentTab === 'cuentas' ? grupoDeSub(adminSub) : currentTab === 'config' ? NAV_GRUPOS.find(x=>x.k === 'config') : null;
+    if(g) p = {icono: g.icono, nombre: g.nombre};
     if(currentTab === 'cuentas'){
       const s = SUBMENU_ADMIN.find(([k])=>k === adminSub);
       if(s) sub = ' <small>› ' + s[1] + (adminSub === 'banco' && bancoVista === 'caja' ? ' › 💵 Caja' : '') + '</small>';
