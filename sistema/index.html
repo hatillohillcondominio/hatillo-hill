@@ -8351,9 +8351,32 @@ async function ecDescargar(hojasFn, archivo, btn){
   }catch(err){ alert('No se pudo armar el reporte: ' + (err.message || err)); }
   if(btn){ btn.disabled = false; btn.textContent = txt; }
 }
-function ecTablaResumen(titulo, res, color){
-  const filas = Object.keys(res.porTipo).sort((a, b)=>res.porTipo[b] - res.porTipo[a])
-    .map(k=>'<div class="comp-item"><span class="t">' + esc(k) + '</span><b>' + fmtMoney(ecR2(res.porTipo[k])) + '</b></div>').join('');
+// detalle desplegable: tipo › quién debe (o a quién se le debe) › cada documento
+function ecDetalleTipo(lista){
+  const grupos = {};
+  lista.forEach(x=>{ (grupos[x.clave] = grupos[x.clave] || {nombre: x.nombre, clave: x.clave, items: [], total: 0}).items.push(x); grupos[x.clave].total += x.saldo; });
+  const colorTramo = t=>t === EC_TRAMOS[0] || t === EC_TRAMOS[5] ? 'var(--sub)' : 'var(--red)';
+  return Object.values(grupos).sort((a, b)=>b.total - a.total).map(g=>{
+    const quien = /^(n:|id:|apto:|nomina)/.test(g.clave) || g.clave === g.nombre ? g.nombre : g.clave + (g.nombre ? ' · ' + g.nombre : '');
+    const docs = g.items.slice().sort((a, b)=>String(a.vence || a.fecha || '').localeCompare(String(b.vence || b.fecha || ''))).map(x=>
+      '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0 3px 10px;border-top:1px dashed var(--border);font-size:11.5px;">'
+      + '<span>' + (x.control ? '<span style="color:var(--sub);">' + esc(x.control) + '</span> ' : '') + esc(x.documento) + (x.concepto && x.concepto !== x.documento ? ' · ' + esc(x.concepto) : '')
+        + '<br><span style="color:var(--sub);">' + (x.fecha ? 'del ' + ecDM(x.fecha) : '') + (x.vence ? ' · vence ' + ecDM(x.vence) : '')
+        + ' · <span style="color:' + colorTramo(x.tramo) + ';">' + esc(x.tramo) + (x.dias ? ' (' + x.dias + ' días)' : '') + '</span>'
+        + (x.abonado > 0.005 ? ' · de ' + fmtMoney(ecR2(x.monto)) + ', abonado ' + fmtMoney(ecR2(x.abonado)) : '') + '</span></span>'
+      + '<b style="white-space:nowrap;">' + fmtMoney(ecR2(x.saldo)) + '</b></div>').join('');
+    return '<details style="margin-left:10px;"><summary style="cursor:pointer;display:flex;justify-content:space-between;gap:8px;padding:3px 0;font-size:12px;">'
+      + '<span>▸ ' + esc(quien) + (g.items.length > 1 ? ' <span style="color:var(--sub);">(' + g.items.length + ')</span>' : '') + '</span><b>' + fmtMoney(ecR2(g.total)) + '</b></summary>'
+      + docs + '</details>';
+  }).join('');
+}
+function ecTablaResumen(titulo, res, color, lista){
+  const filas = Object.keys(res.porTipo).sort((a, b)=>res.porTipo[b] - res.porTipo[a]).map(k=>{
+    const suyos = (lista || []).filter(x=>x.tipo === k);
+    return '<details class="ecTipo" style="border-top:1px solid var(--border);padding:4px 0;"><summary style="cursor:pointer;display:flex;justify-content:space-between;gap:8px;">'
+      + '<span>▸ ' + esc(k) + ' <span style="color:var(--sub);font-size:11px;">(' + suyos.length + ')</span></span><b>' + fmtMoney(ecR2(res.porTipo[k])) + '</b></summary>'
+      + '<div style="margin:4px 0 2px;">' + ecDetalleTipo(suyos) + '</div></details>';
+  }).join('');
   const tramos = EC_TRAMOS.filter(t=>Math.abs(res.porTramo[t]) > 0.005)
     .map(t=>'<span style="display:inline-block;margin:2px 8px 2px 0;font-size:11.5px;"><span style="color:var(--sub);">' + esc(t) + ':</span> <b' + (/días/.test(t) ? ' style="color:' + (t === EC_TRAMOS[0] ? 'var(--text)' : 'var(--red)') + ';"' : '') + '>' + fmtMoney(ecR2(res.porTramo[t])) + '</b></span>').join('');
   return '<div style="border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:8px 0;background:var(--panel);">'
@@ -8392,7 +8415,8 @@ function renderEstadosSeccion(body){
     try{
       const d = await ecCargar(ecFiltro.corte || ecHoy());
       const rc = ecResumen(d.cxc), rp = ecResumen(d.cxp);
-      host.innerHTML = ecTablaResumen('📥 Por cobrar (CxC)', rc, 'var(--green)') + ecTablaResumen('📤 Por pagar (CxP)', rp, '#d35400')
+      host.innerHTML = '<div class="assumption" style="margin-top:0;">Toca cada línea para ver quién debe y, dentro, cada documento.</div>'
+        + ecTablaResumen('📥 Por cobrar (CxC)', rc, 'var(--green)', d.cxc) + ecTablaResumen('📤 Por pagar (CxP)', rp, '#d35400', d.cxp)
         + '<div class="presuControl"><span>Posición neta (CxC − CxP)</span><b style="color:' + (rc.total - rp.total >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmtMoney(ecR2(rc.total - rp.total)) + '</b></div>';
       // proveedores con algo (pendiente o con movimientos)
       const sel = $('ecProv'), prev = sel.value, m = {};
