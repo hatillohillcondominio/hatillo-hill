@@ -5841,20 +5841,23 @@ async function pintarListaRecibos(host, periodo){
 // y nadie la puede editar ni borrar.
 const AUD_TABLAS = {
   apartamentos:'Apartamentos', perfiles:'Usuarios', periodos:'Meses', gastos:'Gastos',
-  recibos:'Recibos', recibo_detalle:'Detalle de recibos', pagos:'Cobros', pago_aplicaciones:'Reparto de cobros',
+  recibos:'Recibos', recibo_detalle:'Detalle de recibos', pagos:'Cobros', aplicaciones_pago:'Reparto de cobros',
   cargos:'Cargos sueltos', multas:'Multas', egresos:'Pagos a proveedores', egreso_conceptos:'Conceptos de los pagos de nómina', movimientos_banco:'Movimientos del banco',
   cuentas_banco:'Cuentas del banco', nominas:'Nóminas', nomina_lineas:'Líneas de nómina', empleados:'Empleados',
   empleado_conceptos:'Conceptos de empleados', prestamos_empleado:'Préstamos a empleados',
   presupuestos:'Presupuestos', presupuesto_partidas:'Partidas del presupuesto', categorias_gasto:'Categorías de gasto',
   proveedores:'Proveedores', productos:'Productos', inventario_movimientos:'Movimientos de inventario',
   solicitudes_material:'Solicitudes de material', proyectos:'Proyectos', proyecto_aportes:'Aportes a proyectos',
-  proyecto_abonos:'Abonos a proyectos', configuracion:'Configuración', notas:'Notas', avisos_plantillas:'Plantillas de avisos',
-  datos_pago_portal:'Datos de pago del portal', cobranza_abogados:'Abogada de cobranza',
-  cobranza_apartamentos:'Apartamentos en cobranza', cobranza_avisos:'Avisos a la abogada'
+  proyecto_abonos:'Abonos a proyectos', configuracion:'Configuración', notas:'Notas',
+  cobranza_abogados:'Abogada de cobranza',
+  cobranza_apartamentos:'Apartamentos en cobranza', cobranza_avisos:'Avisos a la abogada',
+  facturas_por_pagar:'Facturas por pagar', otros_ingresos:'Otros ingresos', ingresos_fijos:'Ingresos fijos',
+  nomina_detalle:'Detalle de nómina', solicitud_items:'Materiales de las solicitudes',
+  apartamento_componentes:'Componentes de apartamentos', estacionamientos:'Puestos de estacionamiento', maleteros:'Maleteros'
 };
 const AUD_ACCION = {INSERT:['Creó','var(--green)'], UPDATE:['Cambió','#3b78b5'], DELETE:['Borró','var(--red)']};
 const AUD_IGNORAR = ['actualizado_en', 'creado_en', 'importado_en'];
-const AUD_TITULO = ['descripcion','concepto','nombre','titulo','apartamento_id','clave','referencia'];
+const AUD_TITULO = ['descripcion','concepto','nombre','titulo','apartamento_id','clave','referencia','documento','numero','label'];
 let audFiltro = null;
 
 function audResumen(r){
@@ -5944,7 +5947,7 @@ function renderAuditoriaSeccion(body){
           return '<div class="comp-item" data-aud="' + i + '" style="cursor:pointer;">'
             + '<span class="t"><b style="color:' + color + ';">' + verbo + '</b> · ' + esc(AUD_TABLAS[r.tabla] || r.tabla)
             + ' · ' + esc(audResumen(r)) + '<br><span style="color:var(--dim);font-size:11px;">' + fmtHora(r.ocurrido_en)
-            + ' · ' + esc(r.usuario_correo || 'la base (proceso automático o SQL)') + '</span></span>'
+            + ' · ' + esc(r.usuario_correo || 'directo en la base (SQL en Supabase o proceso automático)') + '</span></span>'
             + '</div><div data-aud-det="' + i + '" style="display:none;"></div>';
         }).join('')
         + (hayMas ? '<button class="chip" id="audMas" style="width:100%;margin-top:6px;">Cargar más</button>' : '');
