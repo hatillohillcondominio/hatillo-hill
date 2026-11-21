@@ -4652,7 +4652,10 @@ let pagosCache = [];
 let reportadosCache = [];   // pagos que reportaron los vecinos desde el portal y esperan confirmacion
 let egresosCache = [];        // pagos que hizo el condominio (tabla egresos)
 let egresosListos = false;    // false si la tabla egresos aun no existe en la base
-let porPagar = [];            // lo pendiente: gastos y obligaciones de nomina
+let porPagar = [];            // lo pendiente: gastos, facturas a crédito y obligaciones de nomina
+let facturasCache = [];       // facturas por pagar (sql/41) con lo pagado y el saldo
+let diasCreditoDefecto = 7;   // vencimiento que se propone al cargar una factura a crédito
+let cobranzaEsperadaPct = 75; // % de lo facturado que se espera cobrar (flujo de caja)
 let cobradoMes = 0;           // lo que pagaron los vecinos en el mes elegido
 let egresoAbierto = null;     // clave del pendiente cuyo formulario de pago esta abierto
 let tasaDia = null;           // ultima tasa BCV usada para pagar
@@ -4711,6 +4714,13 @@ async function cargarCuentas(){
   }
   const rep = await db.from('pagos').select('*').eq('estado', 'reportado').order('fecha');
   reportadosCache = rep.data || [];
+  const cfgEC = await db.from('configuracion').select('clave, valor').in('clave', ['dias_credito_defecto', 'cobranza_esperada_pct']);
+  (cfgEC.data || []).forEach(c=>{
+    const n = parseFloat(c.valor);
+    if(!isFinite(n)) return;
+    if(c.clave === 'dias_credito_defecto') diasCreditoDefecto = Math.max(0, Math.round(n));
+    if(c.clave === 'cobranza_esperada_pct') cobranzaEsperadaPct = Math.min(100, Math.max(0, n));
+  });
   await cargarNomina();
   await cargarBanco();
   await cargarPresupuesto();
@@ -4745,6 +4755,20 @@ async function cargarEgresos(){
     if(pend > 0.005) porPagar.push({clave:'g'+g.id, tipo:'gasto', gasto_id:g.id, periodo:g.periodo_id,
       concepto:g.descripcion + (g.proveedor ? ' · ' + g.proveedor : ''), monto:Number(g.monto), pendiente:pend});
   });
+  // facturas a crédito (sql/41): se deben, pero entran al recibo recién cuando se pagan
+  facturasCache = [];
+  const fac = await db.from('v_facturas_por_pagar').select('*').eq('anulada', false).order('vence_el');
+  if(!fac.error){
+    facturasCache = fac.data || [];
+    const hoy = new Date().toISOString().slice(0,10);
+    facturasCache.filter(f=>Number(f.saldo) > 0.005).forEach(f=>{
+      const vencida = f.vence_el < hoy;
+      porPagar.push({clave:'f'+f.id, tipo:'factura', factura_id:f.id, fac:f,
+        periodo:(vencida ? '⚠️ venció ' : 'vence ') + f.vence_el.split('-').reverse().join('/'),
+        concepto:f.descripcion + (f.documento ? ' · ' + f.documento : '') + (f.proveedor ? ' · ' + f.proveedor : ''),
+        monto:Number(f.monto), pendiente:Number(f.saldo)});
+    });
+  }
   // qué conceptos cubre cada pago de nómina (sql/33; si no se ha corrido, no hay detalle)
   egresoConceptosCache = {};
   const egNom = egresosCache.filter(e=>e.empleado_id).map(e=>e.id);
@@ -5462,6 +5486,7 @@ function renderEgresosSeccion(body){
       + '</div>'; }).join('');
   const formPago = p=>'<div style="border:1px solid #d35400;border-radius:10px;padding:8px 12px;margin:4px 0 10px;background:var(--panel);">'
     + (p.conceptos ? formConceptos(p) : '')
+    + (p.tipo === 'factura' ? '<div class="assumption" style="margin:0 0 6px;">Lo que pagues ahora pasa a los gastos de <b>' + esc(mesLegible((periodosCache.find(x=>x.estado==='abierto')||{}).id || '')) + '</b> y entra a su recibo. Puedes pagar una parte: el resto sigue por pagar.</div>' : '')
     + '<div class="form-row"><label>Fecha del pago</label><input type="date" id="egFecha" value="' + new Date().toISOString().slice(0,10) + '"></div>'
     + '<div class="form-row"><label>Monto ($)</label><input type="number" step="0.01" id="egMonto" value="' + p.pendiente + '"' + (p.conceptos ? ' readonly title="Es la suma de los conceptos marcados"' : '') + '></div>'
     + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.0001" id="egTasa" value="' + (tasaDia||'') + '" placeholder="Ej. 857,01"></div>'
@@ -5487,8 +5512,13 @@ function renderEgresosSeccion(body){
         ? porPagar.map(p=>'<div class="comp-item"><span class="t">' + esc(p.periodo) + ' · ' + esc(p.concepto)
             + (p.pendiente < p.monto - 0.005 ? ' <span style="color:var(--sub);">(abonado ' + fmtMoney(p.monto - p.pendiente) + ' de ' + fmtMoney(p.monto) + ')</span>' : '')
             + '</span><span style="display:flex;align-items:center;gap:8px;"><b>' + fmtMoney(p.pendiente) + '</b>'
+            + (p.tipo === 'factura' ? ' ' + (p.fac.comprobante_url || p.fac.documento
+                  ? '<span style="color:var(--green);" title="' + escHtml((p.fac.documento ? 'Factura ' + p.fac.documento : '') + (p.fac.comprobante_url ? ' · con archivo' : ' · sin archivo')) + '">🧾' + (p.fac.comprobante_url ? '📎' : '') + '</span>'
+                  : '<span style="color:var(--amber);">⚠️ sin soporte</span>')
+                + ' <button class="accionBtn" data-soporte-factura="' + p.factura_id + '" title="Factura, proveedor y archivo de soporte">🧾</button>' : '')
             + (egresoAbierto===p.clave ? '' : '<button class="chip" data-pagar="' + p.clave + '" style="background:#d35400;color:#fff;">💸 Pagar</button>')
-            + '</span></div>' + (egresoAbierto===p.clave ? formPago(p) : '')).join('')
+            + '</span></div>' + (p.tipo === 'factura' ? '<div data-soporte-fhost="' + p.factura_id + '"></div>' : '')
+            + (egresoAbierto===p.clave ? formPago(p) : '')).join('')
         : '<div class="empty">No hay nada pendiente por pagar.</div>')
     + '<h3 class="section" style="margin-top:14px;">Pagado en ' + mesLegible(mesActual) + '</h3>'
     + (delMes.length
@@ -5593,6 +5623,16 @@ function renderEgresosSeccion(body){
       if(abierto.conceptos && forma !== 'Efectivo' && !ref){ alert('Falta la referencia de la transferencia.'); return; }
       const btn = document.getElementById('egConfirmar');
       btn.disabled = true;
+      if(abierto.tipo === 'factura'){
+        // el gasto nace en el mes abierto con lo pagado (sql/41)
+        const r = await db.rpc('pagar_factura', {p_factura: abierto.factura_id, p_fecha: document.getElementById('egFecha').value || null,
+          p_monto: monto, p_tasa: tasa, p_forma: forma, p_referencia: ref, p_nota: document.getElementById('egNota').value.trim() || null});
+        if(r.error){ btn.disabled = false; alert('No se pudo registrar el pago: ' + r.error.message); return; }
+        if(tasa) tasaDia = tasa;
+        egresoAbierto = null;
+        await refrescarCuentas();
+        return;
+      }
       const { data: eg, error } = await db.from('egresos').insert({
         fecha: document.getElementById('egFecha').value || null,
         concepto: abierto.concepto + (cons.length && cons.length < abierto.conceptos.length ? ' · ' + cons.map(c=>c.concepto).join(', ') : ''),
@@ -5630,9 +5670,18 @@ function renderEgresosSeccion(body){
       await refrescarCuentas();
     };
   }
+  sec.querySelectorAll('[data-soporte-factura]').forEach(b=>{
+    b.onclick = async ()=>{
+      const host = sec.querySelector('[data-soporte-fhost="' + b.dataset.soporteFactura + '"]');
+      if(host.innerHTML){ host.innerHTML = ''; return; }
+      const f = facturasCache.find(x=>x.id === b.dataset.soporteFactura);
+      await abrirSoporteGasto(f, host, true, refrescarCuentas, 'facturas_por_pagar');
+      if(!puedeDinero()) soloLectura(host);
+    };
+  });
   sec.querySelectorAll('[data-borrar-egreso]').forEach(b=>{
     b.onclick = async ()=>{
-      if(!confirm('¿Anular este pago? El gasto vuelve a quedar por pagar.')) return;
+      if(!confirm('¿Anular este pago? El gasto vuelve a quedar por pagar (si era de una factura, el gasto se borra y la factura vuelve a deber).')) return;
       const { error } = await db.from('egresos').delete().eq('id', b.dataset.borrarEgreso);
       if(error){ alert('No se pudo anular: ' + error.message); return; }
       await refrescarCuentas();
@@ -6079,9 +6128,18 @@ const SUBMENU_ADMIN = [
   ['cobranza',    '⚖️ Cobranza',    '#7b4fb0', 'Cobranza con la abogada'],
   ['notas',       '📝 Notas',       '#8a7a3b', 'Notas de la junta'],
   ['auditoria',   '🕵️ Auditoría',   '#4a4a6a', 'Auditoría'],
+  ['estados',     '📑 Estados de cuenta', '#1f6f8b', 'Estados de cuenta'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
   ['usuarios',    '🔐 Usuarios',    '#5b6472', 'Usuarios del sistema']
 ];
+// cuántas cosas esperan en cada sección (sale como número rojo en el ☰)
+function avisosDeSub(k){
+  try{
+    if(k === 'cobros') return reportadosCache.length;
+    if(k === 'cobranza') return cobranza.pendientes.length;
+  }catch(e){}
+  return 0;
+}
 let adminSub = 'gastos';
 try{ adminSub = localStorage.getItem('hh_admin_sub') || 'gastos'; }catch(e){}
 
@@ -6102,6 +6160,7 @@ function renderCuentasTab(body){
   if(adminSub === 'notas') renderNotasSeccion(body);
   if(adminSub === 'cobranza') renderCobranzaSeccion(body);
   if(adminSub === 'auditoria') renderAuditoriaSeccion(body);
+  if(adminSub === 'estados') renderEstadosSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
   // cada bloque toma la seccion de su titulo; los que no tienen titulo siguen a la anterior
   const titulos = {'Últimos cobros': 'cobros', 'Pagos reportados': 'cobros', 'Otros ingresos': 'cobros', 'Cuentas del mes': 'cabecera'};
@@ -6141,20 +6200,13 @@ function renderCuentasTab(body){
       body.insertBefore(nota, els[0]);
     });
   }
-  const menu = document.createElement('div');
-  menu.className = 'subMenu';
-  menu.innerHTML = SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verUsuarios) && (k !== 'auditoria' || verAuditoria)).map(([k, etiqueta, color])=>
-    '<button style="--c:' + color + ';"' + (k===adminSub ? ' class="activo"' : '') + ' data-sub-ir="' + k + '">' + etiqueta
-    + (k === 'cobros' && reportadosCache.length ? ' <span class="subBadge">' + reportadosCache.length + '</span>' : '')
-    + (k === 'cobranza' && cobranza.pendientes.length ? ' <span class="subBadge">' + cobranza.pendientes.length + '</span>' : '') + '</button>').join('');
-  body.insertBefore(menu, body.firstChild);
+  // el submenú vive solo en el ☰ (la fila de botones de arriba lo repetía)
   const ir = k=>{
     adminSub = k;
     try{ localStorage.setItem('hh_admin_sub', k); }catch(e){}
     renderSidebar();
     document.getElementById('sidebarBody').scrollTop = 0;
   };
-  menu.querySelectorAll('[data-sub-ir]').forEach(b=>{ b.onclick = ()=>ir(b.dataset.subIr); });
   body.querySelectorAll('[data-ir-sub]').forEach(p=>{ p.onclick = ()=>ir(p.dataset.irSub); });
 }
 
@@ -6205,7 +6257,15 @@ function renderCuentasCompleto(body){
       + '<div class="form-row"><label title="Desmárcalo si este gasto sale del fondo de reserva o de un proyecto: entonces no se le cobra otra vez al vecino">Se reparte a los vecinos</label>'
         + '<input type="checkbox" id="gProrr" checked style="width:auto;"></div>'
       + (egresosListos
-          ? '<div class="form-row"><label>Ya se pagó</label><input type="checkbox" id="gPagado" style="width:auto;"></div>'
+          ? '<div class="form-row"><label>¿Ya se pagó?</label><select id="gEstadoPago">'
+              + '<option value="">— elige —</option>'
+              + '<option value="pagado">Sí, ya se pagó (entra a este mes)</option>'
+              + '<option value="credito">No, queda por pagar (factura a crédito)</option></select></div>'
+            + '<input type="checkbox" id="gPagado" style="display:none;">'
+            + '<div id="gCreditoDatos" style="display:none;">'
+            + '<div class="assumption" style="margin:0 0 6px;">Una factura por pagar <b>no entra al recibo</b> hasta que se paga: queda en Pagos y en Estados de cuenta, y el día que se paga pasa a los gastos del mes abierto.</div>'
+            + '<div class="form-row two"><div><label>N.º de factura</label><input type="text" id="gDoc" placeholder="Opcional"></div>'
+              + '<div><label>Vence (aprox.)</label><input type="date" id="gVence"></div></div></div>'
             + '<div id="gPagoDatos" style="display:none;">'
             + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.0001" id="gTasa" value="' + (tasaDia||'') + '"></div>'
             + '<div class="form-row"><label>Forma</label><select id="gForma">' + ['Transferencia','Pago móvil','Efectivo','Otro'].map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
@@ -6263,6 +6323,36 @@ function renderCuentasCompleto(body){
     const desc = document.getElementById('gDesc').value.trim();
     const monto = parseFloat(document.getElementById('gMonto').value);
     if(!desc || !monto){ alert('Hace falta el concepto y un monto distinto de cero.'); return; }
+    const selEstado = document.getElementById('gEstadoPago');
+    if(selEstado && !selEstado.value){ alert('Indica si el gasto ya se pagó o si queda por pagar.'); selEstado.focus(); return; }
+    if(selEstado && selEstado.value === 'credito'){
+      // factura a crédito: no entra al recibo hasta que se pague (sql/41)
+      const fecha = document.getElementById('gFecha').value || new Date().toISOString().slice(0,10);
+      const vence = document.getElementById('gVence').value;
+      if(!(monto > 0)){ alert('Una factura por pagar debe tener un monto mayor que cero.'); return; }
+      if(!vence){ alert('Indica la fecha aproximada de vencimiento de la factura.'); document.getElementById('gVence').focus(); return; }
+      if(vence < fecha){ alert('El vencimiento no puede ser antes de la fecha de la factura.'); return; }
+      btnAdd.disabled = true;
+      const provC = document.getElementById('gProv').value.trim() || null;
+      const { error: errF } = await db.from('facturas_por_pagar').insert({
+        fecha, vence_el: vence,
+        categoria_id: document.getElementById('gCat').value,
+        descripcion: desc,
+        proveedor: provC,
+        proveedor_id: await fichaProveedor(provC),
+        documento: document.getElementById('gDoc').value.trim() || null,
+        monto,
+        prorrateable: document.getElementById('gProrr').checked,
+        registrado_por: miPerfil.id
+      });
+      btnAdd.disabled = false;
+      if(errF){ alert('No se pudo registrar la factura: ' + errF.message
+        + (/facturas_por_pagar/.test(errF.message) ? '\n\nFalta ejecutar sql/41_cuentas_por_pagar.sql en Supabase.' : '')); return; }
+      alert('Factura registrada por pagar (vence ' + vence.split('-').reverse().join('/') + '). La ves en Pagos y en Estados de cuenta; entra al recibo el mes en que se pague.');
+      await refrescarCuentas();
+      return;
+    }
+    if(selEstado) document.getElementById('gPagado').checked = selEstado.value === 'pagado';
     btnAdd.disabled = true;
     const prov = document.getElementById('gProv').value.trim() || null;
     const { data: nuevo, error } = await db.from('gastos').insert({
@@ -6300,7 +6390,21 @@ function renderCuentasCompleto(body){
     const t = await tasaDelDia(document.getElementById('gFecha').value);
     if(t) document.getElementById('gTasa').value = t.tasa;
   };
-  if(chkPag) chkPag.onchange = ()=>{ document.getElementById('gPagoDatos').style.display = chkPag.checked ? '' : 'none'; tasaGasto(); };
+  const selEst = document.getElementById('gEstadoPago');
+  const venceDefecto = ()=>{
+    const f = document.getElementById('gFecha').value;
+    if(!f) return;
+    const d = new Date(f + 'T12:00:00');
+    d.setDate(d.getDate() + diasCreditoDefecto);
+    document.getElementById('gVence').value = d.toISOString().slice(0,10);
+  };
+  if(selEst) selEst.onchange = ()=>{
+    chkPag.checked = selEst.value === 'pagado';
+    document.getElementById('gPagoDatos').style.display = selEst.value === 'pagado' ? '' : 'none';
+    document.getElementById('gCreditoDatos').style.display = selEst.value === 'credito' ? '' : 'none';
+    if(selEst.value === 'credito' && !document.getElementById('gVence').value) venceDefecto();
+    tasaGasto();
+  };
   if(chkPag) document.getElementById('gFecha').addEventListener('change', tasaGasto);
 
   lista.querySelectorAll('[data-soporte-gasto]').forEach(b=>{
@@ -7709,6 +7813,641 @@ const XLS_REPORTES = [
   ['inventario', '📦 Inventario', 'Existencias, todos los movimientos numerados y las solicitudes de material.', xlsInventario, true],
   ['cobranza', '⚖️ Pagos en cobranza (abogada)', 'Cada pago de los apartamentos que lleva la abogada: propietario, apartamento, referencia, monto y qué recibos o meses paga, más el resumen de cada caso.', xlsCobranza, true]
 ];
+// =====================================================================
+// 📑 ESTADOS DE CUENTA: por cobrar (CxC), por pagar (CxP) y flujo de caja
+// Todo se arma en el momento desde la base, a una fecha de corte.
+// =====================================================================
+const EC_TRAMOS = ['Por vencer', '1 a 30 días', '31 a 60 días', '61 a 90 días', 'Más de 90 días', 'Sin vencimiento'];
+const ecFmtF = d=>d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+const ecHoy = ()=>ecFmtF(new Date());
+const ecDia = (f, n)=>{ const d = new Date(f + 'T12:00:00'); d.setDate(d.getDate() + n); return ecFmtF(d); };
+const ecDiasEntre = (a, b)=>Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 86400000);
+const ecFinDeMes = m=>ecDia(mesSiguiente(m) + '-01', -1);
+const ecDM = f=>f ? String(f).slice(0,10).split('-').reverse().join('/') : '';
+const ecFmt2 = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+const ecR2 = n=>Math.round((Number(n) || 0) * 100) / 100;
+function ecTramo(vence, corte){
+  if(!vence) return EC_TRAMOS[5];
+  const d = ecDiasEntre(vence, corte);
+  return d <= 0 ? EC_TRAMOS[0] : d <= 30 ? EC_TRAMOS[1] : d <= 60 ? EC_TRAMOS[2] : d <= 90 ? EC_TRAMOS[3] : EC_TRAMOS[4];
+}
+let ecCache = null;                          // {corte, d}
+let ecFiltro = {corte: '', desde: '', hasta: ''};
+
+// todo lo que se debe y lo que nos deben, a la fecha de corte
+async function ecCargar(corte){
+  if(ecCache && ecCache.corte === corte) return ecCache.d;
+  const opc = p=>p.catch(()=>[]);
+  const [aptos, recibos, apl, pagos, proys, aportes, abonos, multas, cargos, prest, favor, facs, gastos, egresos, provs, periodos] = await Promise.all([
+    xlsAptos(),
+    xlsTraer('recibos', 'id, periodo_id, apartamento_id, monto_total, emitido_en, vence_el', 'periodo_id'),
+    xlsTraer('aplicaciones_pago', 'pago_id, recibo_id, monto'),
+    xlsTraer('pagos', 'id, apartamento_id, fecha, monto, forma_pago, banco, referencia, estado, numero_control', 'fecha'),
+    xlsTraer('proyectos', 'id, nombre, creado_en', 'creado_en'), xlsTraer('proyecto_aportes', '*'), xlsTraer('proyecto_abonos', '*', 'fecha'),
+    xlsTraer('multas', 'id, apartamento_id, fecha, descripcion, monto, estado, recibo_id', 'fecha'),
+    xlsTraer('cargos', 'id, apartamento_id, fecha, concepto, monto, anulado, recibo_id', 'fecha'),
+    opc(xlsTraer('v_prestamos', '*')), opc(xlsTraer('v_saldo_favor', '*')),
+    opc(xlsTraer('v_facturas_por_pagar', '*', 'vence_el')),
+    xlsTraer('gastos', 'id, periodo_id, fecha, categoria_id, descripcion, proveedor, proveedor_id, documento, monto, origen, prorrateable, factura_id, numero_control', 'fecha'),
+    xlsTraer('egresos', 'id, fecha, tipo, concepto, gasto_id, nomina_id, monto_usd, forma_pago, referencia, numero_control', 'fecha'),
+    xlsTraer('proveedores', 'id, nombre, rif, telefono, correo', 'nombre'),
+    xlsTraer('periodos', 'id, estado, externo', 'id')
+  ]);
+  const fPago = {}, pagosOk = pagos.filter(p=>p.estado === 'confirmado');
+  pagosOk.forEach(p=>{ fPago[p.id] = p.fecha; });
+  const aplicado = {};
+  apl.forEach(x=>{ if((fPago[x.pago_id] || '9999') <= corte) aplicado[x.recibo_id] = (aplicado[x.recibo_id] || 0) + Number(x.monto); });
+  const nom = id=>xlsNombre(aptos, id);
+  const cxc = [], cxp = [];
+  // 1. recibos de condominio
+  recibos.forEach(r=>{
+    const fecha = r.emitido_en ? String(r.emitido_en).slice(0,10) : r.periodo_id + '-01';
+    if(fecha > corte) return;
+    const saldo = ecR2(Number(r.monto_total) - (aplicado[r.id] || 0));
+    if(saldo <= 0.005) return;
+    cxc.push({tipo: 'Recibo de condominio', clave: r.apartamento_id, nombre: nom(r.apartamento_id), documento: 'Recibo ' + r.periodo_id,
+      concepto: 'Condominio ' + mesLegible(r.periodo_id), fecha, vence: r.vence_el || null, monto: Number(r.monto_total), abonado: ecR2(aplicado[r.id] || 0), saldo});
+  });
+  // 2. proyectos especiales (Pozo de Agua y otros)
+  const proy = {};
+  proys.forEach(p=>{ proy[p.id] = p; });
+  const abonado = {};
+  abonos.forEach(b=>{ if(b.fecha <= corte) abonado[b.aporte_id] = (abonado[b.aporte_id] || 0) + Number(b.monto); });
+  aportes.forEach(ap=>{
+    const saldo = ecR2(Number(ap.monto_aporte) - (abonado[ap.id] || 0));
+    if(saldo <= 0.005) return;
+    const p = proy[ap.proyecto_id] || {};
+    cxc.push({tipo: 'Proyecto', clave: ap.apartamento_id, nombre: nom(ap.apartamento_id), documento: p.nombre || 'Proyecto',
+      concepto: 'Aporte ' + (p.nombre || ''), fecha: p.creado_en ? String(p.creado_en).slice(0,10) : '', vence: null,
+      monto: Number(ap.monto_aporte), abonado: ecR2(abonado[ap.id] || 0), saldo});
+  });
+  // 3. multas y cargos que todavía no entraron a un recibo
+  multas.filter(m=>m.estado === 'pendiente' && !m.recibo_id && m.fecha <= corte && Number(m.monto) > 0).forEach(m=>{
+    cxc.push({tipo: 'Multa por facturar', clave: m.apartamento_id, nombre: nom(m.apartamento_id), documento: 'Multa',
+      concepto: m.descripcion || 'Multa', fecha: m.fecha, vence: null, monto: Number(m.monto), abonado: 0, saldo: Number(m.monto)});
+  });
+  cargos.filter(c=>!c.anulado && !c.recibo_id && c.fecha <= corte).forEach(c=>{
+    cxc.push({tipo: 'Cargo por facturar', clave: c.apartamento_id, nombre: nom(c.apartamento_id), documento: 'Cargo',
+      concepto: c.concepto, fecha: c.fecha, vence: null, monto: Number(c.monto), abonado: 0, saldo: Number(c.monto)});
+  });
+  // 4. préstamos a empleados: se descuentan en nómina
+  prest.filter(p=>Number(p.saldo) > 0.005).forEach(p=>{
+    cxc.push({tipo: 'Préstamo a empleado', clave: p.empleado || 'Empleado', nombre: p.empleado || '', documento: 'Préstamo',
+      concepto: 'Préstamo del ' + ecDM(p.fecha) + (p.nota ? ' · ' + p.nota : ''), fecha: p.fecha, vence: null,
+      monto: Number(p.monto), abonado: ecR2(Number(p.monto) - Number(p.saldo)), saldo: ecR2(p.saldo)});
+  });
+  // --- por pagar ---
+  const pagadoGasto = {};
+  egresos.forEach(e=>{ if(e.gasto_id && e.fecha <= corte) pagadoGasto[e.gasto_id] = (pagadoGasto[e.gasto_id] || 0) + Number(e.monto_usd); });
+  const pagadoFac = {};
+  gastos.forEach(g=>{ if(g.factura_id) pagadoFac[g.factura_id] = (pagadoFac[g.factura_id] || 0) + (pagadoGasto[g.id] || 0); });
+  const nomProv = {};
+  provs.forEach(p=>{ nomProv[p.id] = p.nombre; });
+  const claveProv = x=>x.proveedor_id ? 'id:' + x.proveedor_id : 'n:' + normalizeSearch(x.proveedor || 'Sin proveedor');
+  const nombreProv = x=>(x.proveedor_id && nomProv[x.proveedor_id]) || x.proveedor || 'Sin proveedor';
+  facs.filter(f=>!f.anulada && f.fecha <= corte).forEach(f=>{
+    const saldo = ecR2(Number(f.monto) - (pagadoFac[f.id] || 0));
+    if(saldo <= 0.005) return;
+    cxp.push({tipo: 'Factura', clave: claveProv(f), nombre: nombreProv(f), documento: f.documento || f.numero_control || '',
+      concepto: f.descripcion, fecha: f.fecha, vence: f.vence_el, monto: Number(f.monto), abonado: ecR2(pagadoFac[f.id] || 0), saldo,
+      control: f.numero_control || '', categoria: f.categoria_id});
+  });
+  const externo = {};
+  periodos.forEach(p=>{ externo[p.id] = !!p.externo; });
+  gastos.filter(g=>g.origen !== 'nomina' && !g.factura_id && Number(g.monto) > 0 && !externo[g.periodo_id] && g.fecha <= corte).forEach(g=>{
+    const saldo = ecR2(Number(g.monto) - (pagadoGasto[g.id] || 0));
+    if(saldo <= 0.005) return;
+    cxp.push({tipo: 'Gasto sin pagar', clave: claveProv(g), nombre: nombreProv(g), documento: g.documento || g.numero_control || '',
+      concepto: g.descripcion, fecha: g.fecha, vence: g.fecha, monto: Number(g.monto), abonado: ecR2(pagadoGasto[g.id] || 0), saldo,
+      control: g.numero_control || '', categoria: g.categoria_id});
+  });
+  // nómina pendiente (lo que ya calculó Pagos)
+  if(corte >= ecHoy()) porPagar.filter(p=>/^nomina/.test(p.tipo)).forEach(p=>{
+    const vence = p.tipo === 'nomina_q1' ? p.periodo + '-15' : ecFinDeMes(p.periodo);
+    cxp.push({tipo: 'Nómina', clave: 'nomina', nombre: 'Nómina (empleados y aportes de ley)', documento: 'Nómina ' + p.periodo,
+      concepto: p.concepto, fecha: p.periodo + '-01', vence, monto: p.monto, abonado: ecR2(p.monto - p.pendiente), saldo: ecR2(p.pendiente)});
+  });
+  // saldos a favor de los vecinos: plata que el condominio les debe
+  favor.filter(s=>Number(s.a_favor) > 0.005).forEach(s=>{
+    cxp.push({tipo: 'Saldo a favor de vecino', clave: 'apto:' + s.apartamento_id, nombre: s.apartamento_id + ' · ' + nom(s.apartamento_id),
+      documento: 'Saldo a favor', concepto: 'Pagado de más: se descuenta en su próximo recibo', fecha: corte, vence: null,
+      monto: Number(s.a_favor), abonado: 0, saldo: ecR2(s.a_favor)});
+  });
+  [cxc, cxp].forEach(l=>l.forEach(x=>{
+    x.tramo = ecTramo(x.vence, corte);
+    x.dias = x.vence ? Math.max(0, ecDiasEntre(x.vence, corte)) : null;
+  }));
+  const d = {corte, aptos, cxc, cxp, recibos, apl, pagosOk, proy, aportes, abonos, facs, gastos, egresos, provs, pagadoGasto, nomProv, claveProv, nombreProv};
+  ecCache = {corte, d};
+  return d;
+}
+
+function ecResumen(lista){
+  const porTramo = {}, porTipo = {};
+  EC_TRAMOS.forEach(t=>{ porTramo[t] = 0; });
+  lista.forEach(x=>{ porTramo[x.tramo] += x.saldo; porTipo[x.tipo] = (porTipo[x.tipo] || 0) + x.saldo; });
+  return {total: ecR2(lista.reduce((s, x)=>s + x.saldo, 0)), porTramo, porTipo};
+}
+function ecEnRango(x, desde, hasta){ return xlsEnRango(x.vence || x.fecha, desde, hasta); }
+
+// ---------- hojas de Excel ----------
+function ecFilaDoc(x, quien){
+  const f = {'Tipo': x.tipo};
+  f[quien] = x.tipo === 'Préstamo a empleado' ? x.nombre : (quien === 'Apartamento' ? x.clave : x.nombre);
+  if(quien === 'Apartamento') f['Propietario'] = x.nombre;
+  if(x.control !== undefined) f['N.º control'] = x.control;
+  return Object.assign(f, {'Documento': x.documento, 'Concepto': x.concepto, 'Fecha': xlsFecha(x.fecha), 'Vence': xlsFecha(x.vence),
+    'Días vencido': x.dias == null ? '' : x.dias, 'Antigüedad': x.tramo,
+    'Monto $': xlsNum(x.monto), [quien === 'Apartamento' ? 'Abonado $' : 'Pagado $']: xlsNum(x.abonado), 'Saldo $': xlsNum(x.saldo)});
+}
+function ecHojaAntiguedad(lista){
+  const tipos = [...new Set(lista.map(x=>x.tipo))];
+  const filas = tipos.map(t=>{
+    const f = {'Tipo': t};
+    EC_TRAMOS.forEach(tr=>{ f[tr + ' $'] = xlsNum(lista.filter(x=>x.tipo === t && x.tramo === tr).reduce((s, x)=>s + x.saldo, 0)); });
+    f['Total $'] = xlsNum(lista.filter(x=>x.tipo === t).reduce((s, x)=>s + x.saldo, 0));
+    return f;
+  });
+  return xlsConTotal(filas, 'Tipo', 'TOTAL');
+}
+function ecPorQuien(lista, quien){
+  const g = {};
+  lista.forEach(x=>{
+    const k = x.clave;
+    const r = g[k] = g[k] || {k, nombre: x.nombre, n: 0, total: 0, tr: {}, tipos: {}};
+    r.n++; r.total += x.saldo;
+    r.tr[x.tramo] = (r.tr[x.tramo] || 0) + x.saldo;
+    r.tipos[x.tipo] = (r.tipos[x.tipo] || 0) + x.saldo;
+  });
+  return Object.values(g).sort((a, b)=>b.total - a.total).map(r=>{
+    const f = {};
+    if(quien === 'Apartamento'){ f['Apartamento'] = r.k; f['Propietario'] = r.nombre; }
+    else f[quien] = r.nombre;
+    f['Documentos'] = r.n;
+    EC_TRAMOS.forEach(tr=>{ f[tr + ' $'] = xlsNum(r.tr[tr] || 0); });
+    f['Total $'] = xlsNum(r.total);
+    return f;
+  });
+}
+async function ecXlsCxcFecha(){
+  const d = await ecCargar(ecFiltro.corte || ecHoy());
+  const l = d.cxc.filter(x=>ecEnRango(x, ecFiltro.desde, ecFiltro.hasta))
+    .sort((a, b)=>String(a.vence || '9999').localeCompare(String(b.vence || '9999')) || String(a.fecha).localeCompare(String(b.fecha)));
+  return [['CxC por fecha', xlsConTotal(l.map(x=>ecFilaDoc(x, 'Apartamento')), 'Tipo')], ['Antigüedad CxC', ecHojaAntiguedad(l)]];
+}
+async function ecXlsCxcApto(){
+  const d = await ecCargar(ecFiltro.corte || ecHoy());
+  const l = d.cxc.filter(x=>ecEnRango(x, ecFiltro.desde, ecFiltro.hasta));
+  const aptos = l.filter(x=>x.tipo !== 'Préstamo a empleado');
+  const det = aptos.slice().sort((a, b)=>String(a.clave).localeCompare(String(b.clave)) || String(a.fecha).localeCompare(String(b.fecha)));
+  return [['CxC por apartamento', xlsConTotal(ecPorQuien(aptos, 'Apartamento'), 'Apartamento')],
+    ['Detalle por apartamento', xlsConTotal(det.map(x=>ecFilaDoc(x, 'Apartamento')), 'Tipo')],
+    ['Préstamos a empleados', xlsConTotal(l.filter(x=>x.tipo === 'Préstamo a empleado').map(x=>ecFilaDoc(x, 'Empleado')), 'Tipo')]];
+}
+async function ecXlsCxpFecha(){
+  const d = await ecCargar(ecFiltro.corte || ecHoy());
+  const l = d.cxp.filter(x=>ecEnRango(x, ecFiltro.desde, ecFiltro.hasta))
+    .sort((a, b)=>String(a.vence || '9999').localeCompare(String(b.vence || '9999')) || String(a.fecha).localeCompare(String(b.fecha)));
+  return [['CxP por fecha', xlsConTotal(l.map(x=>ecFilaDoc(x, 'Proveedor')), 'Tipo')], ['Antigüedad CxP', ecHojaAntiguedad(l)]];
+}
+async function ecXlsCxpProv(){
+  const d = await ecCargar(ecFiltro.corte || ecHoy());
+  const l = d.cxp.filter(x=>ecEnRango(x, ecFiltro.desde, ecFiltro.hasta));
+  const det = l.slice().sort((a, b)=>String(a.nombre).localeCompare(String(b.nombre)) || String(a.vence || '').localeCompare(String(b.vence || '')));
+  return [['CxP por proveedor', xlsConTotal(ecPorQuien(l, 'Proveedor'), 'Proveedor')], ['Detalle por proveedor', xlsConTotal(det.map(x=>ecFilaDoc(x, 'Proveedor')), 'Tipo')]];
+}
+
+// ---------- flujo de caja proyectado: 13 semanas ----------
+async function ecFlujo(){
+  const hoy = ecHoy();
+  const d = await ecCargar(hoy);
+  const pct = cobranzaEsperadaPct / 100;
+  const dow = (new Date(hoy + 'T12:00:00').getDay() + 6) % 7;      // 0 = lunes
+  const ini = ecDia(hoy, -dow), fin = ecDia(ini, 13 * 7 - 1);
+  const semanas = Array.from({length: 13}, (_, i)=>({ini: ecDia(ini, i * 7), fin: ecDia(ini, i * 7 + 6)}));
+  const lineas = [];
+  const semanaDe = f=>Math.floor(ecDiasEntre(ini, f) / 7);
+  const poner = (fecha, grupo, concepto, monto)=>{
+    if(!(Math.abs(monto) > 0.004)) return;
+    if(fecha < hoy) fecha = hoy;
+    if(fecha > fin) return;
+    lineas.push({semana: semanaDe(fecha), fecha, grupo, concepto, monto: ecR2(monto)});
+  };
+  // reparte un monto en partes iguales por día entre dos fechas (solo lo que cae desde hoy)
+  const repartir = (desde, hasta, grupo, concepto, monto)=>{
+    desde = desde < hoy ? hoy : desde;
+    if(hasta < desde) hasta = desde;
+    const dias = ecDiasEntre(desde, hasta) + 1;
+    const porSem = {};
+    for(let i = 0; i < dias; i++){
+      const f = ecDia(desde, i);
+      if(f > fin) break;
+      porSem[semanaDe(f)] = (porSem[semanaDe(f)] || 0) + monto / dias;
+    }
+    Object.keys(porSem).forEach(s=>{ lineas.push({semana: Number(s), fecha: semanas[s].ini, grupo, concepto, monto: ecR2(porSem[s])}); });
+  };
+  const [cfg, presus, partidas, ingFijos, nominas, cuentas] = await Promise.all([
+    xlsTraer('configuracion', 'clave, valor'), xlsTraer('presupuestos', '*', 'desde'), xlsTraer('presupuesto_partidas', '*'),
+    xlsTraer('ingresos_fijos', '*').catch(()=>[]), xlsTraer('nominas', 'id, periodo_id, estado', 'periodo_id'),
+    xlsTraer('v_saldo_cuentas', '*').catch(()=>[])
+  ]);
+  const conf = {};
+  cfg.forEach(c=>{ conf[c.clave] = c.valor; });
+  const diaVence = parseInt(conf.dia_vencimiento, 10) || 15;
+  // saldo inicial: bancos en $ + bancos en Bs a la tasa de hoy + caja
+  const t = await tasaDelDia(hoy);
+  const tasa = (t && Number(t.tasa)) || tasaDia || null;
+  let saldoIni = 0, notaSaldo = [];
+  cuentas.forEach(c=>{
+    const s = Number(c.saldo) || 0;
+    if(c.moneda === 'VES'){
+      const usd = tasa ? s / tasa : 0;
+      saldoIni += usd; notaSaldo.push(c.nombre + ': Bs ' + ecFmt2(s) + (tasa ? ' ≈ ' + fmtMoney(ecR2(usd)) + ' (tasa ' + ecFmt2(tasa) + ')' : ' (sin tasa: no se suma)'));
+    } else { saldoIni += s; notaSaldo.push(c.nombre + ': ' + fmtMoney(s)); }
+  });
+  // --- entradas ---
+  d.cxc.filter(x=>x.tipo === 'Recibo de condominio').forEach(x=>{
+    if(x.vence && x.vence >= hoy) repartir(hoy, x.vence, 'Cobro de recibos emitidos', 'Recibo ' + x.clave + ' (' + cobranzaEsperadaPct + '%)', x.saldo * pct);
+    else repartir(hoy, fin, 'Cobro de deuda vencida', 'Deuda vencida ' + x.clave + ' (' + cobranzaEsperadaPct + '%)', x.saldo * pct);
+  });
+  // los proyectos (Pozo de Agua) no entran: su plata es del proyecto y sus pagos no están en el flujo
+  // recibos que todavía no se emiten: la cuota del presupuesto vigente
+  const presuDe = m=>presus.find(p=>m + '-01' >= p.desde && m + '-01' <= p.hasta);
+  const cuotaDe = m=>{
+    const p = presuDe(m);
+    if(!p) return 0;
+    return ecR2(partidas.filter(x=>x.presupuesto_id === p.id).reduce((s, x)=>s + (x.montos || []).reduce((a, b)=>a + Number(b), 0), 0) / 12);
+  };
+  // el primer mes abierto sin recibos (los de la administradora anterior no cuentan: los facturó ella)
+  const conRecibos = new Set(d.recibos.map(r=>r.periodo_id));
+  const pers = (periodosCache || []).slice().sort((a, b)=>a.id.localeCompare(b.id));
+  const abierto = pers.find(p=>p.estado === 'abierto' && !p.externo && !conRecibos.has(p.id));
+  let m = abierto ? abierto.id : pers.length ? mesSiguiente(pers[pers.length - 1].id) : hoy.slice(0,7);
+  for(let i = 0; i < 6; i++, m = mesSiguiente(m)){
+    const desde = mesSiguiente(m) + '-01';
+    if(desde > fin) break;
+    const vence = mesSiguiente(m) + '-' + String(diaVence).padStart(2, '0');
+    const cuota = cuotaDe(m);
+    if(cuota > 0) repartir(desde, vence, 'Cobro de recibos por emitir', 'Recibos de ' + mesLegible(m) + ': cuota ' + fmtMoney(cuota) + ' × ' + cobranzaEsperadaPct + '%', cuota * pct);
+  }
+  ingFijos.filter(f=>f.activo).forEach(f=>{
+    for(let mm = hoy.slice(0,7); mm + '-01' <= fin; mm = mesSiguiente(mm)) poner(mm + '-15', 'Otros ingresos fijos', f.nombre + (f.pagador ? ' · ' + f.pagador : ''), Number(f.monto_usd));
+  });
+  // --- salidas ---
+  d.cxp.filter(x=>x.tipo === 'Factura' || x.tipo === 'Gasto sin pagar').forEach(x=>poner(x.vence || hoy, 'Facturas por pagar', x.nombre + ' · ' + x.documento, -x.saldo));
+  // nómina: lo pendiente de cada nómina, y las que vienen con la última como modelo
+  const ids = nominas.map(n=>n.id);
+  const lin = ids.length ? (await db.from('nomina_lineas').select('*').in('nomina_id', ids)).data || [] : [];
+  let modelo = null;
+  nominas.forEach(n=>{
+    const tt = totalesDeLineas(lin.filter(l=>l.nomina_id === n.id));
+    const pagado = tipo=>d.egresos.filter(e=>e.nomina_id === n.id && e.tipo === tipo).reduce((s, e)=>s + Number(e.monto_usd), 0);
+    poner(n.periodo_id + '-15', 'Nómina', 'Nómina ' + mesLegible(n.periodo_id) + ' · 1ra quincena', -Math.max(0, tt.q1 - pagado('nomina_q1')));
+    poner(ecFinDeMes(n.periodo_id), 'Nómina', 'Nómina ' + mesLegible(n.periodo_id) + ' · 2da quincena', -Math.max(0, tt.q2 - pagado('nomina_q2')));
+    poner(ecFinDeMes(n.periodo_id), 'Nómina', 'Nómina ' + mesLegible(n.periodo_id) + ' · IVSS, RPE y FAOV', -Math.max(0, tt.retencion + tt.aporte_patronal - pagado('nomina_ley')));
+    modelo = {m: n.periodo_id, t: tt};
+  });
+  if(modelo) for(let mm = mesSiguiente(modelo.m); mm + '-01' <= fin; mm = mesSiguiente(mm)){
+    poner(mm + '-15', 'Nómina', 'Nómina ' + mesLegible(mm) + ' · 1ra quincena (estimada)', -modelo.t.q1);
+    poner(ecFinDeMes(mm), 'Nómina', 'Nómina ' + mesLegible(mm) + ' · 2da quincena (estimada)', -modelo.t.q2);
+    poner(ecFinDeMes(mm), 'Nómina', 'Nómina ' + mesLegible(mm) + ' · aportes de ley (estimado)', -(modelo.t.retencion + modelo.t.aporte_patronal));
+  }
+  // gastos fijos del presupuesto (sin nómina): lo presupuestado del mes que aún no se gastó ni tiene factura
+  for(let mm = hoy.slice(0,7); mm + '-01' <= fin; mm = mesSiguiente(mm)){
+    const p = presuDe(mm);
+    if(!p) continue;
+    const idx = (Number(mm.slice(0,4)) - Number(p.desde.slice(0,4))) * 12 + Number(mm.slice(5,7)) - Number(p.desde.slice(5,7));
+    partidas.filter(x=>x.presupuesto_id === p.id && x.categoria_id !== 'personal').forEach(x=>{
+      const pres = Number((x.montos || [])[idx]) || 0;
+      if(pres <= 0) return;
+      const gastado = d.gastos.filter(g=>g.periodo_id === mm && g.categoria_id === x.categoria_id && g.origen !== 'nomina').reduce((s, g)=>s + Number(g.monto), 0);
+      const enFacturas = d.cxp.filter(c=>c.categoria === x.categoria_id && (c.vence || '').slice(0,7) === mm).reduce((s, c)=>s + c.saldo, 0);
+      const resto = pres - gastado - enFacturas;
+      const cat = (categoriasCache.find(c=>c.id === x.categoria_id) || {}).nombre || x.categoria_id;
+      if(resto > 0.005) repartir(mm + '-01', ecFinDeMes(mm), 'Gastos fijos del presupuesto', cat + ' · ' + mesLegible(mm), -resto);
+    });
+  }
+  // --- tabla por semana ---
+  const GRUPOS_IN = ['Cobro de recibos emitidos', 'Cobro de recibos por emitir', 'Cobro de deuda vencida', 'Otros ingresos fijos'];
+  const GRUPOS_OUT = ['Facturas por pagar', 'Nómina', 'Gastos fijos del presupuesto'];
+  let saldo = saldoIni;
+  const filas = semanas.map((s, i)=>{
+    const de = lineas.filter(l=>l.semana === i);
+    const sum = g=>ecR2(de.filter(l=>l.grupo === g).reduce((a, l)=>a + l.monto, 0));
+    const r = {sem: i + 1, ini: s.ini, fin: s.fin, saldoIni: ecR2(saldo)};
+    GRUPOS_IN.concat(GRUPOS_OUT).forEach(g=>{ r[g] = sum(g); });
+    r.entradas = ecR2(GRUPOS_IN.reduce((a, g)=>a + r[g], 0));
+    r.salidas = ecR2(GRUPOS_OUT.reduce((a, g)=>a - r[g], 0));
+    saldo = saldo + r.entradas - r.salidas;
+    r.saldoFin = ecR2(saldo);
+    return r;
+  });
+  return {hoy, ini, fin, filas, lineas: lineas.sort((a, b)=>a.semana - b.semana || a.grupo.localeCompare(b.grupo)), saldoIni: ecR2(saldoIni), notaSaldo, GRUPOS_IN, GRUPOS_OUT, tasa};
+}
+async function ecXlsFlujo(){
+  const f = await ecFlujo();
+  const tabla = f.filas.map(r=>{
+    const o = {'Semana': r.sem, 'Desde': xlsFecha(r.ini), 'Hasta': xlsFecha(r.fin), 'Saldo inicial $': xlsNum(r.saldoIni)};
+    f.GRUPOS_IN.forEach(g=>{ o[g + ' $'] = xlsNum(r[g]); });
+    o['Total entradas $'] = xlsNum(r.entradas);
+    f.GRUPOS_OUT.forEach(g=>{ o[g + ' $'] = xlsNum(-r[g]); });
+    o['Total salidas $'] = xlsNum(r.salidas);
+    o['Neto de la semana $'] = xlsNum(r.entradas - r.salidas);
+    o['Saldo final $'] = xlsNum(r.saldoFin);
+    return o;
+  });
+  const det = f.lineas.map(l=>({'Semana': l.semana + 1, 'Fecha': xlsFecha(l.fecha), 'Grupo': l.grupo, 'Concepto': l.concepto,
+    'Entrada $': l.monto > 0 ? xlsNum(l.monto) : '', 'Salida $': l.monto < 0 ? xlsNum(-l.monto) : ''}));
+  const sup = [{'Supuesto': 'Saldo inicial', 'Valor': fmtMoney(f.saldoIni) + ' · ' + f.notaSaldo.join(' · ')},
+    {'Supuesto': 'Cobranza esperada', 'Valor': cobranzaEsperadaPct + '% de lo facturado (se cambia en Configuración)'},
+    {'Supuesto': 'Recibos emitidos por vencer', 'Valor': 'se cobran repartidos hasta su vencimiento'},
+    {'Supuesto': 'Deuda vencida de recibos', 'Valor': 'se cobra repartida en las 13 semanas'},
+    {'Supuesto': 'Proyectos (Pozo de Agua)', 'Valor': 'no entran al flujo: lo que se cobra es del proyecto y sus pagos van aparte'},
+    {'Supuesto': 'Recibos por emitir', 'Valor': 'cuota del presupuesto, cobrada del día 1 al vencimiento del mes siguiente'},
+    {'Supuesto': 'Facturas por pagar', 'Valor': 'en la semana de su vencimiento (las vencidas, en la primera)'},
+    {'Supuesto': 'Nómina', 'Valor': '1ra quincena el 15, 2da y aportes de ley el último día; los meses sin nómina usan la última como modelo'},
+    {'Supuesto': 'Gastos fijos', 'Valor': 'presupuesto del mes (sin nómina) menos lo ya gastado y lo que ya tiene factura, repartido en el mes'}];
+  return [['Flujo de caja', tabla], ['Detalle del flujo', xlsConTotal(det, 'Semana')], ['Supuestos', sup]];
+}
+
+// ---------- ingresos y egresos del mes ----------
+async function ecXlsMes(){
+  const mes = mesActual || ecHoy().slice(0,7);
+  const desde = mes + '-01', hasta = ecFinDeMes(mes);
+  const [aptos, pagos, abonos, aportes, proys, otros, egresos, gastos, cats] = await Promise.all([
+    xlsAptos(), xlsTraer('pagos', '*', 'fecha'), xlsTraer('proyecto_abonos', '*', 'fecha'), xlsTraer('proyecto_aportes', 'id, proyecto_id, apartamento_id'),
+    xlsTraer('proyectos', 'id, nombre'), xlsTraer('otros_ingresos', '*', 'fecha').catch(()=>[]), xlsTraer('egresos', '*', 'fecha'),
+    xlsTraer('gastos', '*', 'fecha'), xlsTraer('categorias_gasto', 'id, nombre')
+  ]);
+  const cat = {}, ap = {}, pr = {};
+  cats.forEach(c=>{ cat[c.id] = c.nombre; });
+  aportes.forEach(a=>{ ap[a.id] = a; });
+  proys.forEach(p=>{ pr[p.id] = p.nombre; });
+  const ing = [];
+  pagos.filter(p=>p.estado === 'confirmado' && xlsEnRango(p.fecha, desde, hasta)).forEach(p=>ing.push({'Fecha': xlsFecha(p.fecha), 'Tipo': 'Condominio',
+    'Concepto': p.apartamento_id + ' · ' + xlsNombre(aptos, p.apartamento_id), 'Forma de pago': p.forma_pago || '', 'Referencia': p.referencia || '', 'Monto $': xlsNum(p.monto)}));
+  abonos.filter(b=>xlsEnRango(b.fecha, desde, hasta)).forEach(b=>{ const a = ap[b.aporte_id] || {}; ing.push({'Fecha': xlsFecha(b.fecha), 'Tipo': 'Proyecto: ' + (pr[a.proyecto_id] || ''),
+    'Concepto': (a.apartamento_id || '') + ' · ' + xlsNombre(aptos, a.apartamento_id), 'Forma de pago': b.forma_pago || '', 'Referencia': b.referencia || '', 'Monto $': xlsNum(b.monto)}); });
+  otros.filter(o=>xlsEnRango(o.fecha, desde, hasta)).forEach(o=>ing.push({'Fecha': xlsFecha(o.fecha), 'Tipo': 'Otro ingreso',
+    'Concepto': o.concepto, 'Forma de pago': o.forma || '', 'Referencia': o.referencia || '', 'Monto $': xlsNum(o.monto_usd)}));
+  ing.sort((a, b)=>a['Fecha'] - b['Fecha']);
+  const egr = egresos.filter(e=>xlsEnRango(e.fecha, desde, hasta)).map(e=>({'N.º control': e.numero_control || '', 'Fecha': xlsFecha(e.fecha),
+    'Tipo': (XLS_TIPO_EGRESO[e.tipo] || e.tipo), 'Concepto': e.concepto || '', 'Forma de pago': e.forma_pago || '', 'Referencia': e.referencia || '', 'Monto $': xlsNum(e.monto_usd)}));
+  const gm = gastos.filter(g=>g.periodo_id === mes);
+  const porCat = {};
+  gm.forEach(g=>{ porCat[g.categoria_id] = (porCat[g.categoria_id] || 0) + Number(g.monto); });
+  const gastosCat = Object.keys(porCat).sort((a, b)=>porCat[b] - porCat[a]).map(k=>({'Categoría': cat[k] || k, 'Gastado $': xlsNum(porCat[k])}));
+  const tIng = ing.reduce((s, x)=>s + x['Monto $'], 0), tEgr = egr.reduce((s, x)=>s + x['Monto $'], 0);
+  const porTipo = {};
+  ing.forEach(x=>{ porTipo[x['Tipo']] = (porTipo[x['Tipo']] || 0) + x['Monto $']; });
+  const egTipo = {};
+  egr.forEach(x=>{ egTipo[x['Tipo']] = (egTipo[x['Tipo']] || 0) + x['Monto $']; });
+  const resumen = [{'Concepto': 'INGRESOS DE ' + mesLegible(mes).toUpperCase(), 'Monto $': ''}]
+    .concat(Object.keys(porTipo).map(k=>({'Concepto': '   ' + k, 'Monto $': xlsNum(porTipo[k])})))
+    .concat([{'Concepto': 'Total ingresos', 'Monto $': xlsNum(tIng)}, {'Concepto': '', 'Monto $': ''}, {'Concepto': 'EGRESOS (PAGOS HECHOS)', 'Monto $': ''}])
+    .concat(Object.keys(egTipo).map(k=>({'Concepto': '   ' + k, 'Monto $': xlsNum(egTipo[k])})))
+    .concat([{'Concepto': 'Total egresos', 'Monto $': xlsNum(tEgr)}, {'Concepto': '', 'Monto $': ''},
+      {'Concepto': 'RESULTADO DEL MES (ingresos − egresos)', 'Monto $': xlsNum(tIng - tEgr)}]);
+  return [['Ingresos y egresos', resumen], ['Ingresos', xlsConTotal(ing, 'Fecha')], ['Egresos', xlsConTotal(egr, 'N.º control')], ['Gastos por categoría', xlsConTotal(gastosCat, 'Categoría', 'TOTAL')]];
+}
+
+// ---------- estados de cuenta individuales ----------
+async function ecMovApto(apto){
+  const d = await ecCargar(ecFiltro.corte || ecHoy());
+  const movs = [];
+  d.recibos.filter(r=>r.apartamento_id === apto).forEach(r=>{
+    const f = r.emitido_en ? String(r.emitido_en).slice(0,10) : r.periodo_id + '-01';
+    if(f <= d.corte) movs.push({fecha: f, doc: 'Recibo ' + r.periodo_id, concepto: 'Condominio ' + mesLegible(r.periodo_id), cargo: Number(r.monto_total), abono: 0});
+  });
+  d.pagosOk.filter(p=>p.apartamento_id === apto && p.fecha <= d.corte).forEach(p=>{
+    movs.push({fecha: p.fecha, doc: p.numero_control || 'Pago', concepto: 'Pago ' + [p.forma_pago, p.banco, p.referencia ? '#' + p.referencia : ''].filter(Boolean).join(' '), cargo: 0, abono: Number(p.monto)});
+  });
+  movs.sort((a, b)=>a.fecha.localeCompare(b.fecha) || b.cargo - a.cargo);
+  let s = 0;
+  movs.forEach(m=>{ s += m.cargo - m.abono; m.saldo = ecR2(s); });
+  const pend = d.cxc.filter(x=>x.clave === apto);
+  const proy = d.aportes.filter(a=>a.apartamento_id === apto).map(a=>({proyecto: (d.proy[a.proyecto_id] || {}).nombre || '',
+    aporte: Number(a.monto_aporte), abonado: ecR2(d.abonos.filter(b=>b.aporte_id === a.id && b.fecha <= d.corte).reduce((t, b)=>t + Number(b.monto), 0))}));
+  proy.forEach(p=>{ p.saldo = ecR2(p.aporte - p.abonado); });
+  return {d, a: d.aptos[apto] || {id: apto}, movs, pend, proy, saldo: ecR2(s)};
+}
+async function ecMovProv(clave){
+  const d = await ecCargar(ecFiltro.corte || ecHoy());
+  const movs = [];
+  const enFactura = new Set();
+  d.facs.filter(f=>!f.anulada && d.claveProv(f) === clave && f.fecha <= d.corte).forEach(f=>{
+    enFactura.add(f.id);
+    movs.push({fecha: f.fecha, doc: f.numero_control || '', concepto: (f.documento ? f.documento + ' · ' : '') + f.descripcion + ' (vence ' + ecDM(f.vence_el) + ')', cargo: Number(f.monto), abono: 0});
+  });
+  const gastosProv = d.gastos.filter(g=>g.origen !== 'nomina' && Number(g.monto) > 0 && (g.factura_id ? enFactura.has(g.factura_id) : d.claveProv(g) === clave));
+  gastosProv.filter(g=>!g.factura_id && g.fecha <= d.corte).forEach(g=>movs.push({fecha: g.fecha, doc: g.numero_control || '', concepto: (g.documento ? g.documento + ' · ' : '') + g.descripcion, cargo: Number(g.monto), abono: 0}));
+  const ids = new Set(gastosProv.map(g=>g.id));
+  d.egresos.filter(e=>e.gasto_id && ids.has(e.gasto_id) && e.fecha <= d.corte).forEach(e=>movs.push({fecha: e.fecha, doc: e.numero_control || '',
+    concepto: 'Pago ' + [e.forma_pago, e.referencia ? '#' + e.referencia : ''].filter(Boolean).join(' ') + ' · ' + (e.concepto || ''), cargo: 0, abono: Number(e.monto_usd)}));
+  movs.sort((a, b)=>a.fecha.localeCompare(b.fecha) || b.cargo - a.cargo);
+  let s = 0;
+  movs.forEach(m=>{ s += m.cargo - m.abono; m.saldo = ecR2(s); });
+  const pid = clave.startsWith('id:') ? clave.slice(3) : null;
+  const ficha = pid ? (d.provs.find(p=>p.id === pid) || {}) : {};
+  const nombre = (pid && d.nomProv[pid]) || (d.cxp.find(x=>x.clave === clave) || {}).nombre || (gastosProv[0] || {}).proveedor || 'Proveedor';
+  return {d, nombre, ficha, movs, pend: d.cxp.filter(x=>x.clave === clave), saldo: ecR2(s)};
+}
+function ecHojaMovs(movs){
+  return movs.map(m=>({'Fecha': xlsFecha(m.fecha), 'Documento': m.doc, 'Concepto': m.concepto,
+    'Cargo $': m.cargo ? xlsNum(m.cargo) : '', 'Abono $': m.abono ? xlsNum(m.abono) : '', 'Saldo $': xlsNum(m.saldo)}));
+}
+async function ecXlsApto(apto){
+  const e = await ecMovApto(apto);
+  const sheets = [['Movimientos', ecHojaMovs(e.movs)], ['Pendiente', xlsConTotal(e.pend.map(x=>ecFilaDoc(x, 'Apartamento')), 'Tipo')]];
+  if(e.proy.length) sheets.push(['Proyectos', xlsConTotal(e.proy.map(p=>({'Proyecto': p.proyecto, 'Aporte $': xlsNum(p.aporte), 'Abonado $': xlsNum(p.abonado), 'Saldo $': xlsNum(p.saldo)})), 'Proyecto', 'TOTAL')]);
+  return sheets;
+}
+async function ecXlsProv(clave){
+  const e = await ecMovProv(clave);
+  return [['Movimientos', ecHojaMovs(e.movs)], ['Pendiente', xlsConTotal(e.pend.map(x=>ecFilaDoc(x, 'Proveedor')), 'Tipo')]];
+}
+
+// PDF con jsPDF (se carga solo la primera vez que se pide)
+let ecPdfListo = null;
+function ecCargarPdf(){
+  if(ecPdfListo) return ecPdfListo;
+  const cargar = src=>new Promise((ok, mal)=>{ const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = ()=>mal(new Error('No se pudo cargar ' + src)); document.head.appendChild(s); });
+  ecPdfListo = cargar('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+    .then(()=>cargar('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js'))
+    .catch(e=>{ ecPdfListo = null; throw e; });
+  return ecPdfListo;
+}
+const ecMon = n=>(Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n) || 0).toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+async function ecPdf(titulo, subt, datos, bloques, archivo){
+  await ecCargarPdf();
+  const doc = new window.jspdf.jsPDF({unit: 'pt', format: 'letter'});
+  const W = doc.internal.pageSize.getWidth();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+  doc.text('Conjunto Residencial Hatillo Hill', 40, 46);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110);
+  doc.text('RIF J-407475100', 40, 60);
+  doc.setTextColor(20); doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+  doc.text(titulo, W - 40, 46, {align: 'right'});
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  doc.text(subt, W - 40, 60, {align: 'right'});
+  let y = 84;
+  doc.setFontSize(10);
+  datos.forEach(([k, v])=>{ doc.setFont('helvetica', 'bold'); doc.text(k + ':', 40, y); doc.setFont('helvetica', 'normal'); doc.text(String(v || '—'), 150, y); y += 14; });
+  y += 6;
+  bloques.forEach(b=>{
+    if(y > 700){ doc.addPage(); y = 50; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text(b.titulo, 40, y); y += 6;
+    doc.autoTable({startY: y, head: [b.cols], body: b.filas.length ? b.filas : [[{content: 'Sin movimientos', colSpan: b.cols.length}]],
+      foot: b.pie ? [b.pie] : undefined, theme: 'striped', margin: {left: 40, right: 40},
+      styles: {fontSize: 8, cellPadding: 3}, headStyles: {fillColor: [47, 111, 139]}, footStyles: {fillColor: [230, 230, 230], textColor: 20, fontStyle: 'bold'},
+      columnStyles: b.der || {}});
+    y = doc.lastAutoTable.finalY + 22;
+  });
+  const n = doc.internal.getNumberOfPages();
+  for(let i = 1; i <= n; i++){ doc.setPage(i); doc.setFontSize(8); doc.setTextColor(130);
+    doc.text('Generado el ' + ecDM(ecHoy()) + ' · HH Control · página ' + i + ' de ' + n, W / 2, doc.internal.pageSize.getHeight() - 20, {align: 'center'}); }
+  doc.save(archivo + '.pdf');
+}
+const EC_DER = {3: {halign: 'right'}, 4: {halign: 'right'}, 5: {halign: 'right'}};
+async function ecPdfApto(apto){
+  const e = await ecMovApto(apto);
+  const a = e.a;
+  await ecPdf('Estado de cuenta', 'Al ' + ecDM(e.d.corte), [['Apartamento', apto], ['Propietario', a.propietario], ['Teléfono', a.telefono], ['Correo', a.correo],
+    ['Saldo condominio', ecMon(e.saldo) + (e.saldo < -0.005 ? ' (a favor)' : '')]], [
+    {titulo: 'Movimientos', cols: ['Fecha', 'Documento', 'Concepto', 'Cargo', 'Abono', 'Saldo'], der: EC_DER,
+      filas: e.movs.map(m=>[ecDM(m.fecha), m.doc, m.concepto, m.cargo ? ecMon(m.cargo) : '', m.abono ? ecMon(m.abono) : '', ecMon(m.saldo)])},
+    {titulo: 'Pendiente de pago', cols: ['Tipo', 'Documento', 'Vence', 'Antigüedad', 'Monto', 'Saldo'], der: {4: {halign: 'right'}, 5: {halign: 'right'}},
+      filas: e.pend.map(x=>[x.tipo, x.documento, ecDM(x.vence), x.tramo, ecMon(x.monto), ecMon(x.saldo)]),
+      pie: ['Total', '', '', '', '', ecMon(e.pend.reduce((s, x)=>s + x.saldo, 0))]}
+  ].concat(e.proy.length ? [{titulo: 'Proyectos especiales', cols: ['Proyecto', 'Aporte', 'Abonado', 'Saldo'], der: {1: {halign: 'right'}, 2: {halign: 'right'}, 3: {halign: 'right'}},
+      filas: e.proy.map(p=>[p.proyecto, ecMon(p.aporte), ecMon(p.abonado), ecMon(p.saldo)])}] : []),
+  'estado_cuenta_' + apto + '_' + e.d.corte);
+}
+async function ecPdfProv(clave){
+  const e = await ecMovProv(clave);
+  await ecPdf('Estado de cuenta de proveedor', 'Al ' + ecDM(e.d.corte), [['Proveedor', e.nombre], ['RIF', e.ficha.rif], ['Teléfono', e.ficha.telefono],
+    ['Saldo por pagar', ecMon(e.saldo)]], [
+    {titulo: 'Movimientos', cols: ['Fecha', 'Documento', 'Concepto', 'Cargo', 'Abono', 'Saldo'], der: EC_DER,
+      filas: e.movs.map(m=>[ecDM(m.fecha), m.doc, m.concepto, m.cargo ? ecMon(m.cargo) : '', m.abono ? ecMon(m.abono) : '', ecMon(m.saldo)])},
+    {titulo: 'Pendiente de pago', cols: ['Documento', 'Concepto', 'Vence', 'Antigüedad', 'Monto', 'Saldo'], der: {4: {halign: 'right'}, 5: {halign: 'right'}},
+      filas: e.pend.map(x=>[x.documento, x.concepto, ecDM(x.vence), x.tramo, ecMon(x.monto), ecMon(x.saldo)]),
+      pie: ['Total', '', '', '', '', ecMon(e.pend.reduce((s, x)=>s + x.saldo, 0))]}
+  ], 'estado_cuenta_' + normalizeSearch(e.nombre).replace(/[^a-z0-9]+/g, '_').slice(0, 30) + '_' + e.d.corte);
+}
+
+// ---------- la sección en pantalla ----------
+const EC_REPORTES = [
+  ['cxc_fecha', '📅 CxC por fecha', ecXlsCxcFecha], ['cxc_apto', '🏠 CxC por apartamento', ecXlsCxcApto],
+  ['cxp_fecha', '📅 CxP por fecha', ecXlsCxpFecha], ['cxp_prov', '🏪 CxP por proveedor', ecXlsCxpProv],
+  ['flujo', '📈 Flujo de caja (13 semanas)', ecXlsFlujo], ['mes', '⚖️ Ingresos y egresos del mes', ecXlsMes]
+];
+async function ecDescargar(hojasFn, archivo, btn){
+  const txt = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Preparando…'; }
+  try{
+    const wb = XLSX.utils.book_new();
+    for(const fn of [].concat(hojasFn)){ (await fn()).forEach(([n, f])=>xlsHoja(wb, n, f)); }
+    XLSX.writeFile(wb, archivo + '.xlsx', {cellDates: true});
+  }catch(err){ alert('No se pudo armar el reporte: ' + (err.message || err)); }
+  if(btn){ btn.disabled = false; btn.textContent = txt; }
+}
+function ecTablaResumen(titulo, res, color){
+  const filas = Object.keys(res.porTipo).sort((a, b)=>res.porTipo[b] - res.porTipo[a])
+    .map(k=>'<div class="comp-item"><span class="t">' + esc(k) + '</span><b>' + fmtMoney(ecR2(res.porTipo[k])) + '</b></div>').join('');
+  const tramos = EC_TRAMOS.filter(t=>Math.abs(res.porTramo[t]) > 0.005)
+    .map(t=>'<span style="display:inline-block;margin:2px 8px 2px 0;font-size:11.5px;"><span style="color:var(--sub);">' + esc(t) + ':</span> <b' + (/días/.test(t) ? ' style="color:' + (t === EC_TRAMOS[0] ? 'var(--text)' : 'var(--red)') + ';"' : '') + '>' + fmtMoney(ecR2(res.porTramo[t])) + '</b></span>').join('');
+  return '<div style="border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:8px 0;background:var(--panel);">'
+    + '<div class="presuControl" style="margin:0 0 6px;"><span>' + titulo + '</span><b style="color:' + color + ';">' + fmtMoney(res.total) + '</b></div>'
+    + (filas || '<div class="empty">Nada pendiente.</div>') + (tramos ? '<div style="margin-top:6px;">' + tramos + '</div>' : '') + '</div>';
+}
+function renderEstadosSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '14px';
+  if(!ecFiltro.corte) ecFiltro.corte = ecHoy();
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#1f6f8b;"><span class="tcIcono">📑</span>Estados de cuenta</h3>'
+    + '<div class="form-row two"><div><label>Fecha de corte</label><input type="date" id="ecCorte" value="' + ecFiltro.corte + '"></div>'
+    + '<div><label>&nbsp;</label><button class="chip" id="ecRecargar" style="width:100%;padding:8px;">🔄 Actualizar</button></div></div>'
+    + '<div id="ecResumen"><div class="empty">Calculando…</div></div>'
+    + '<h3 class="section" style="margin-top:14px;">📥 Descargar en Excel</h3>'
+    + '<div class="form-row two"><div><label>Desde (vencimiento)</label><input type="date" id="ecDesde" value="' + ecFiltro.desde + '"></div>'
+    + '<div><label>Hasta (vencimiento)</label><input type="date" id="ecHasta" value="' + ecFiltro.hasta + '"></div></div>'
+    + '<div class="assumption" style="margin-top:0;">Desde y Hasta filtran CxC y CxP por fecha de vencimiento (o por fecha, si no vence). Vacíos = todo. El flujo de caja arranca siempre hoy.</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px;">'
+    + EC_REPORTES.map(([k, t])=>'<button class="btn" data-ec-xls="' + k + '" style="padding:9px;">' + t + '</button>').join('') + '</div>'
+    + '<button class="btn" id="ecTodo" style="width:100%;margin-top:6px;background:#1f6f8b;color:#fff;">📚 Todo en un solo archivo</button>'
+    + '<h3 class="section" style="margin-top:14px;">👤 Estado de cuenta individual</h3>'
+    + '<div class="form-row"><label>Apartamento</label><select id="ecApto"><option value="">— elige —</option>'
+      + (apartments || []).slice().sort((a, b)=>String(a.id).localeCompare(String(b.id))).map(a=>'<option value="' + escHtml(a.id) + '">' + esc(a.id) + (a.propietario ? ' · ' + esc(a.propietario) : '') + '</option>').join('') + '</select></div>'
+    + '<div style="display:flex;gap:6px;"><button class="btn" id="ecAptoXls" style="flex:1;">📊 Excel</button><button class="btn" id="ecAptoPdf" style="flex:1;">📄 PDF</button></div>'
+    + '<div class="form-row" style="margin-top:8px;"><label>Proveedor</label><select id="ecProv"><option value="">— elige —</option></select></div>'
+    + '<div style="display:flex;gap:6px;"><button class="btn" id="ecProvXls" style="flex:1;">📊 Excel</button><button class="btn" id="ecProvPdf" style="flex:1;">📄 PDF</button></div>'
+    + '<h3 class="section" style="margin-top:14px;">📈 Flujo de caja proyectado (13 semanas)</h3>'
+    + '<div id="ecFlujo"><div class="empty">Calculando…</div></div>';
+  body.appendChild(sec);
+  const $ = id=>sec.querySelector('#' + id);
+  const leerFiltro = ()=>{ ecFiltro.desde = $('ecDesde').value; ecFiltro.hasta = $('ecHasta').value; };
+  const pintar = async ()=>{
+    const host = $('ecResumen');
+    host.innerHTML = '<div class="empty">Calculando…</div>';
+    try{
+      const d = await ecCargar(ecFiltro.corte || ecHoy());
+      const rc = ecResumen(d.cxc), rp = ecResumen(d.cxp);
+      host.innerHTML = ecTablaResumen('📥 Por cobrar (CxC)', rc, 'var(--green)') + ecTablaResumen('📤 Por pagar (CxP)', rp, '#d35400')
+        + '<div class="presuControl"><span>Posición neta (CxC − CxP)</span><b style="color:' + (rc.total - rp.total >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + fmtMoney(ecR2(rc.total - rp.total)) + '</b></div>';
+      // proveedores con algo (pendiente o con movimientos)
+      const sel = $('ecProv'), prev = sel.value, m = {};
+      d.facs.forEach(f=>{ m[d.claveProv(f)] = d.nombreProv(f); });
+      d.gastos.filter(g=>g.origen !== 'nomina' && (g.proveedor_id || (g.proveedor || '').trim())).forEach(g=>{ m[d.claveProv(g)] = d.nombreProv(g); });
+      sel.innerHTML = '<option value="">— elige —</option>' + Object.keys(m).sort((a, b)=>m[a].localeCompare(m[b]))
+        .map(k=>{ const s = d.cxp.filter(x=>x.clave === k).reduce((t, x)=>t + x.saldo, 0);
+          return '<option value="' + escHtml(k) + '"' + (k === prev ? ' selected' : '') + '>' + esc(m[k]) + (s > 0.005 ? ' · debe ' + fmtMoney(ecR2(s)) : '') + '</option>'; }).join('');
+    }catch(err){ host.innerHTML = '<div class="assumption">No se pudo calcular: ' + esc(err.message || err) + '</div>'; }
+  };
+  const pintarFlujo = async ()=>{
+    const host = $('ecFlujo');
+    try{
+      const f = await ecFlujo();
+      const th = 'style="padding:4px 6px;text-align:right;white-space:nowrap;"';
+      const minimo = Math.min(...f.filas.map(r=>r.saldoFin));
+      host.innerHTML = '<div class="assumption" style="margin-top:0;">Arranca con ' + fmtMoney(f.saldoIni) + ' en bancos y caja (' + esc(f.notaSaldo.join(' · ')) + '). '
+        + 'Supone que se cobra el <b>' + cobranzaEsperadaPct + '%</b> de lo facturado (se cambia en ⚙️ Configuración). '
+        + (minimo < 0 ? '<b style="color:var(--red);">⚠️ El saldo se pone en negativo: hay semanas sin plata para cubrir lo que vence.</b>' : 'El saldo no se pone en negativo en estas 13 semanas.') + '</div>'
+        + '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:11.5px;width:100%;">'
+        + '<tr style="background:var(--panel2);"><th style="padding:4px 6px;text-align:left;">Semana</th><th ' + th + '>Entra</th><th ' + th + '>Sale</th><th ' + th + '>Saldo final</th></tr>'
+        + f.filas.map(r=>'<tr style="border-top:1px solid var(--border);" title="' + escHtml(f.GRUPOS_IN.concat(f.GRUPOS_OUT).filter(g=>Math.abs(r[g]) > 0.005).map(g=>g + ': ' + fmtMoney(Math.abs(r[g]))).join('\n')) + '">'
+          + '<td style="padding:4px 6px;white-space:nowrap;">' + r.sem + ' · ' + ecDM(r.ini).slice(0,5) + '–' + ecDM(r.fin).slice(0,5) + '</td>'
+          + '<td ' + th + '><span style="color:var(--green);">' + fmtMoney(r.entradas) + '</span></td>'
+          + '<td ' + th + '><span style="color:#d35400;">' + fmtMoney(r.salidas) + '</span></td>'
+          + '<td ' + th + '><b style="color:' + (r.saldoFin < 0 ? 'var(--red)' : 'var(--text)') + ';">' + fmtMoney(r.saldoFin) + '</b></td></tr>').join('')
+        + '</table></div><div class="assumption">Pasa el mouse sobre una semana para ver de dónde sale cada monto. El detalle completo está en el Excel "Flujo de caja".</div>';
+    }catch(err){ host.innerHTML = '<div class="assumption">No se pudo calcular el flujo: ' + esc(err.message || err) + '</div>'; }
+  };
+  $('ecCorte').onchange = ()=>{ ecFiltro.corte = $('ecCorte').value || ecHoy(); pintar(); };
+  $('ecRecargar').onclick = ()=>{ ecCache = null; pintar(); pintarFlujo(); };
+  $('ecDesde').onchange = leerFiltro; $('ecHasta').onchange = leerFiltro;
+  const sufijo = ()=>'_' + ecFiltro.corte + (ecFiltro.desde || ecFiltro.hasta ? '_' + (ecFiltro.desde || 'inicio') + '_a_' + (ecFiltro.hasta || 'hoy') : '');
+  sec.querySelectorAll('[data-ec-xls]').forEach(b=>{ b.onclick = ()=>{
+    leerFiltro();
+    const r = EC_REPORTES.find(x=>x[0] === b.dataset.ecXls);
+    ecDescargar(r[2], r[0] === 'flujo' ? 'flujo_caja_' + ecHoy() : r[0] === 'mes' ? 'ingresos_egresos_' + (mesActual || ecHoy().slice(0,7)) : r[0] + sufijo(), b);
+  }; });
+  $('ecTodo').onclick = e=>{ leerFiltro(); ecDescargar(EC_REPORTES.map(r=>r[2]), 'estados_de_cuenta' + sufijo(), e.currentTarget); };
+  const conBoton = (btn, fn)=>async ()=>{
+    const t = btn.textContent; btn.disabled = true; btn.textContent = 'Preparando…';
+    try{ await fn(); }catch(err){ alert('No se pudo armar: ' + (err.message || err)); }
+    btn.disabled = false; btn.textContent = t;
+  };
+  const apto = ()=>{ const v = $('ecApto').value; if(!v) alert('Elige un apartamento.'); return v; };
+  const prov = ()=>{ const v = $('ecProv').value; if(!v) alert('Elige un proveedor.'); return v; };
+  $('ecAptoXls').onclick = ()=>{ const a = apto(); if(a) ecDescargar(()=>ecXlsApto(a), 'estado_cuenta_' + a + '_' + ecFiltro.corte, $('ecAptoXls')); };
+  $('ecAptoPdf').onclick = ()=>{ const a = apto(); if(a) conBoton($('ecAptoPdf'), ()=>ecPdfApto(a))(); };
+  $('ecProvXls').onclick = ()=>{ const p = prov(); if(p) ecDescargar(()=>ecXlsProv(p), 'estado_cuenta_proveedor_' + ecFiltro.corte, $('ecProvXls')); };
+  $('ecProvPdf').onclick = ()=>{ const p = prov(); if(p) conBoton($('ecProvPdf'), ()=>ecPdfProv(p))(); };
+  ecCache = null;
+  pintar();
+  pintarFlujo();
+}
+
 async function exportarExcel(claves, desde, hasta, archivo){
   const wb = XLSX.utils.book_new();
   for(const [k, , , fn, usaFechas] of XLS_REPORTES){
@@ -7836,7 +8575,8 @@ async function verComprobante(ruta){
   if(error || !data){ if(v) v.close(); alert('No se pudo abrir el archivo: ' + (error ? error.message : '')); return; }
   if(v) v.location = data.signedUrl; else window.location.href = data.signedUrl;
 }
-async function abrirSoporteGasto(g, host, mesAbierto, alTerminar){
+async function abrirSoporteGasto(g, host, mesAbierto, alTerminar, tabla){
+  tabla = tabla || 'gastos';
   const prov = g.proveedor_id ? (await db.from('proveedores').select('id, nombre, rif').eq('id', g.proveedor_id).maybeSingle()).data : null;
   const refs = soporteEsBanco(g) ? refsDeGasto(g) : [];
   host.innerHTML = '<div style="border:1px solid var(--border);border-radius:8px;padding:4px 10px 8px;margin:2px 0 10px;">'
@@ -7864,7 +8604,7 @@ async function abrirSoporteGasto(g, host, mesAbierto, alTerminar){
     e.preventDefault();
     if(!confirm('¿Quitar el archivo de soporte de este gasto?')) return;
     await db.storage.from('comprobantes').remove([g.comprobante_url]);
-    const { error } = await db.from('gastos').update({comprobante_url: null}).eq('id', g.id);
+    const { error } = await db.from(tabla).update({comprobante_url: null}).eq('id', g.id);
     if(error){ alert('No se pudo quitar: ' + error.message); return; }
     await alTerminar();
   };
@@ -7885,14 +8625,17 @@ async function abrirSoporteGasto(g, host, mesAbierto, alTerminar){
       if(f){
         if(f.size > 10 * 1024 * 1024) throw new Error('El archivo pasa de 10 MB.');
         const ext = (f.name.match(/\.([a-z0-9]{2,5})$/i) || [, f.type === 'application/pdf' ? 'pdf' : 'jpg'])[1].toLowerCase();
-        const ruta = 'gastos/' + g.periodo_id + '/' + g.id + '-' + Date.now() + '.' + ext;
+        const ruta = (tabla === 'gastos' ? 'gastos/' + g.periodo_id : 'facturas') + '/' + g.id + '-' + Date.now() + '.' + ext;
         const up = await db.storage.from('comprobantes').upload(ruta, f, {contentType: f.type || undefined, upsert: false});
         if(up.error) throw new Error(up.error.message);
         if(g.comprobante_url) await db.storage.from('comprobantes').remove([g.comprobante_url]);
         campos.comprobante_url = ruta;
       }
-      const { error } = await db.from('gastos').update(campos).eq('id', g.id);
+      const { error } = await db.from(tabla).update(campos).eq('id', g.id);
       if(error) throw new Error(error.message);
+      // los pagos ya hechos de una factura heredan su archivo si no tenían uno
+      if(tabla === 'facturas_por_pagar' && campos.comprobante_url)
+        await db.from('gastos').update({comprobante_url: campos.comprobante_url}).eq('factura_id', g.id).is('comprobante_url', null);
       await alTerminar();
     }catch(err){ btn.disabled = false; btn.textContent = '💾 Guardar soporte'; alert('No se pudo guardar: ' + (err.message || err)); }
   };
@@ -9237,6 +9980,30 @@ function renderConfigTab(body){
     </div>
   `;
   body.appendChild(waDetails);
+
+  // parámetros de Estados de cuenta y del flujo de caja (sql/41)
+  const ecDet = document.createElement('details');
+  ecDet.style.marginBottom = '12px';
+  ecDet.innerHTML = '<summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--sub);padding:4px 0;">📑 Estados de cuenta y flujo de caja</summary>'
+    + '<div style="margin-top:10px;">'
+    + '<div class="form-row two"><div><label>Cobranza esperada (%)</label><input id="cfgCobranzaPct" type="number" min="0" max="100" step="1" value="' + cobranzaEsperadaPct + '"></div>'
+    + '<div><label>Días de crédito por defecto</label><input id="cfgDiasCredito" type="number" min="0" step="1" value="' + diasCreditoDefecto + '"></div></div>'
+    + '<div class="assumption" style="margin-top:-2px;">El flujo de caja supone que se cobra este % de lo facturado. Los días de crédito proponen el vencimiento al cargar una factura por pagar (se puede cambiar en cada una).</div>'
+    + '<div class="savebar"><button class="btn primary" id="btnGuardarEC" style="flex:1;">Guardar</button></div>'
+    + '<div class="savedFlag" id="flagEC"></div></div>';
+  body.appendChild(ecDet);
+  ecDet.querySelector('#btnGuardarEC').onclick = async ()=>{
+    const pct = parseFloat(ecDet.querySelector('#cfgCobranzaPct').value);
+    const dias = parseInt(ecDet.querySelector('#cfgDiasCredito').value, 10);
+    if(!(pct >= 0 && pct <= 100)){ alert('La cobranza esperada va de 0 a 100.'); return; }
+    if(!(dias >= 0)){ alert('Los días de crédito deben ser 0 o más.'); return; }
+    try{
+      await guardarConfig('cobranza_esperada_pct', pct);
+      await guardarConfig('dias_credito_defecto', dias);
+      cobranzaEsperadaPct = pct; diasCreditoDefecto = dias;
+      const f = ecDet.querySelector('#flagEC'); f.textContent = '✓ Guardado'; setTimeout(()=>{ f.textContent = ''; }, 2500);
+    }catch(err){ alert('No se pudo guardar: ' + (err.message || err)); }
+  };
 
   const shellyDetails = document.createElement('details');
   shellyDetails.style.marginBottom = '12px';
@@ -11543,7 +12310,9 @@ checkMobile();
           + subsAdmin().map(([k, etiqueta, color])=>{
               const m = etiqueta.match(/^(\S+)\s+(.*)$/) || [null, '', etiqueta];
               const enCaja = currentTab === 'cuentas' && adminSub === 'banco' && bancoVista === 'caja';
-              return '<button class="navItem' + (currentTab === 'cuentas' && adminSub === k && !(k === 'banco' && enCaja) ? ' activo' : '') + '" style="--c:' + color + ';" data-nav-sub="' + k + '"><span class="ni">' + m[1] + '</span>' + m[2] + '</button>'
+              const n = avisosDeSub(k);
+              return '<button class="navItem' + (currentTab === 'cuentas' && adminSub === k && !(k === 'banco' && enCaja) ? ' activo' : '') + '" style="--c:' + color + ';" data-nav-sub="' + k + '"><span class="ni">' + m[1] + '</span>' + m[2]
+                + (n ? ' <span class="subBadge" style="margin-left:auto;">' + n + '</span>' : '') + '</button>'
                 + (k === 'banco' ? '<button class="navItem' + (enCaja ? ' activo' : '') + '" style="--c:' + color + ';padding-left:28px;" data-nav-sub="banco" data-nav-caja="1"><span class="ni">💵</span>Caja (efectivo)</button>' : '');
             }).join('')
           + '</div>';
@@ -11591,6 +12360,10 @@ checkMobile();
       if(s) sub = ' <small>› ' + s[1] + (adminSub === 'banco' && bancoVista === 'caja' ? ' › 💵 Caja' : '') + '</small>';
     }
     hdr.innerHTML = p.icono + ' ' + p.nombre + sub;
+    // si hay algo por atender (cobros reportados, cobranza), el ☰ lo avisa
+    const pend = subsAdmin().reduce((s, [k])=>s + avisosDeSub(k), 0);
+    btnMenu.innerHTML = '☰' + (pend ? '<span class="subBadge" style="position:absolute;top:-4px;right:-6px;">' + pend + '</span>' : '');
+    btnMenu.style.position = 'relative';
     if(drawer.classList.contains('open')) pintarMenu();
   }
   const renderOriginal = renderSidebar;
