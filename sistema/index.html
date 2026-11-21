@@ -333,6 +333,106 @@
     #legend .sw{width:8px;height:8px;}
     #hint{display:none;}
   }
+
+  /* ===== DISEÑO 2026-11: barra superior fija + menu hamburguesa, el trabajo ocupa la pagina
+     entera y el edificio queda en miniatura (clic = media pantalla) ===== */
+  body{--hdr:58px;}
+  #topbar{position:fixed;top:0;left:0;right:0;height:var(--hdr);flex-wrap:nowrap;align-items:center;padding:0 16px;gap:10px;
+    background:var(--panel);backdrop-filter:blur(var(--glass-blur)) saturate(1.4);border-bottom:1px solid var(--border);
+    box-shadow:0 1px 8px rgba(60,50,30,.06);z-index:60;pointer-events:auto;}
+  #topbar .chipbar{flex:0 0 auto;}
+  #consultaBar{flex:1 1 420px;max-width:620px;margin-top:0;}
+  #btnMenu{flex:0 0 auto;width:42px;height:40px;border-radius:10px;border:1px solid var(--border);background:var(--panel2);color:var(--text);
+    font-size:20px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  #btnMenu:hover{border-color:var(--accent);color:var(--accent);}
+  #hdrSeccion{flex:0 1 auto;min-width:0;font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text);
+    padding-left:10px;border-left:1px solid var(--border);}
+  #hdrSeccion small{font-weight:600;color:var(--sub);font-size:13px;}
+  #topbar .brand{margin-right:0;}
+
+  #app{position:fixed;top:var(--hdr);left:0;right:0;bottom:0;height:auto;width:auto;}
+  #sidebar, #sidebar.ancho{order:2;flex:1 1 auto;width:auto !important;min-width:0 !important;border-left:none;box-shadow:none;transition:none;}
+  #sidebarTabs{display:none;}
+  #sidebar > .footer-actions{display:none;}
+  #sidebarBody, #sidebar.ancho #sidebarBody{padding:22px 32px 40px;font-size:14px;}
+  #sidebarBody > *, #sidebar.ancho #sidebarBody > *{max-width:none;margin-left:0;margin-right:0;}
+  .subMenu{top:-22px;}
+  .subMenu button{font-size:13px;padding:9px 12px;}
+  h3.section{font-size:13.5px;}
+  .form-row label, .form-row input, .form-row select{font-size:14px;}
+  .comp-item{font-size:13px;}
+  .tablaPresu{font-size:13.5px;}
+  .tablaPresu th{font-size:11.5px;}
+  .btn{font-size:13.5px;}
+  #listHost{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px;align-items:start;}
+  #listHost > *{margin-bottom:0;}
+  #listHost > :not(.card){grid-column:1/-1;}
+  #tooltip{position:fixed;z-index:200;}
+  #mobileToggle{display:none !important;}
+
+  /* el edificio: miniatura flotante abajo a la derecha, o media pantalla a la izquierda */
+  #viewport{order:1;}
+  body.edif-medio #viewport{flex:0 0 50%;border-right:1px solid var(--border);}
+  body.edif-mini #viewport, body.edif-oculto #viewport{position:fixed;right:18px;bottom:18px;width:300px;height:210px;flex:none;z-index:45;
+    border-radius:14px;overflow:hidden;border:1px solid var(--border);box-shadow:0 12px 32px rgba(60,50,30,.25);background:var(--bg);}
+  body.edif-oculto #viewport{visibility:hidden;pointer-events:none;}
+  body.edif-mini #legend, body.edif-mini #hint{display:none;}
+  body.edif-mini #sidebarBody{padding-bottom:250px;}
+  #edifCubierta{position:absolute;inset:0;z-index:12;cursor:zoom-in;display:none;align-items:flex-end;justify-content:center;padding-bottom:10px;
+    background:linear-gradient(to top, rgba(40,35,25,.35), rgba(40,35,25,0) 45%);}
+  #edifCubierta span{background:var(--accent);color:#fff;font-weight:800;font-size:12.5px;padding:6px 12px;border-radius:20px;box-shadow:0 2px 8px rgba(0,0,0,.2);}
+  body.edif-mini #edifCubierta{display:flex;}
+  .edifCtl{position:absolute;top:8px;right:8px;z-index:13;display:flex;gap:6px;}
+  .edifCtl button{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 9px;font-size:12.5px;font-weight:700;cursor:pointer;
+    box-shadow:0 1px 4px rgba(0,0,0,.1);}
+  .edifCtl button:hover{border-color:var(--accent);color:var(--accent);}
+  body.edif-mini .edifCtl .soloMedio{display:none;}
+  body.edif-medio .edifCtl .soloMini{display:none;}
+  #edifPastilla{position:fixed;right:18px;bottom:18px;z-index:45;display:none;background:var(--accent);color:#fff;border:none;border-radius:22px;
+    padding:10px 16px;font-weight:800;font-size:13px;cursor:pointer;box-shadow:0 6px 18px rgba(60,50,30,.3);}
+  body.edif-oculto #edifPastilla{display:block;}
+  #fichaModal{top:calc(var(--hdr) + 12px);}
+  .nCtl{font-family:ui-monospace,Consolas,monospace;font-size:11px;font-weight:700;color:var(--accent);background:rgba(184,134,44,.12);border-radius:5px;padding:1px 5px;white-space:nowrap;}
+
+  /* menu hamburguesa: cajon a la izquierda con secciones y submenus desplegables */
+  #navVelo{position:fixed;inset:0;background:rgba(40,35,25,.32);z-index:150;display:none;}
+  #navVelo.open{display:block;}
+  #navDrawer{position:fixed;top:0;left:0;bottom:0;width:300px;max-width:86vw;z-index:151;background:var(--panel);backdrop-filter:blur(var(--glass-blur)) saturate(1.4);
+    border-right:1px solid var(--border);box-shadow:8px 0 30px rgba(60,50,30,.2);transform:translateX(-105%);transition:transform .2s ease;display:flex;flex-direction:column;}
+  #navDrawer.open{transform:translateX(0);}
+  .navCab{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);font-weight:800;font-size:16px;}
+  .navCab span{color:var(--accent);}
+  .navCuerpo{flex:1;overflow-y:auto;padding:8px 10px 20px;}
+  .navGrupo{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--sub);font-weight:800;margin:14px 8px 6px;}
+  .navItem{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:none;color:var(--text);padding:10px 10px;border-radius:9px;
+    font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;}
+  .navItem .ni{width:22px;text-align:center;font-size:17px;flex:none;}
+  .navItem .chev{margin-left:auto;font-size:11px;opacity:.6;transition:transform .15s;}
+  .navItem.abierto .chev{transform:rotate(90deg);}
+  .navItem:hover{background:rgba(184,134,44,.12);}
+  .navItem.activo{background:var(--accent);color:#fff;}
+  .navSub{display:none;margin:2px 0 6px 20px;padding-left:10px;border-left:2px solid var(--border);}
+  .navSub.open{display:block;}
+  .navSub .navItem{font-size:13px;padding:7px 10px;}
+  .navSub .navItem.activo{background:color-mix(in srgb, var(--c, var(--accent)) 16%, transparent);color:var(--c, var(--accent));font-weight:800;}
+  .navCuerpo .chipbar{display:flex;flex-direction:column;background:transparent;border:none;box-shadow:none;padding:0;margin:0 0 4px;}
+  .navCuerpo .chipbar .chip{text-align:left;width:100%;padding:9px 10px;font-size:13px;}
+
+  @media (max-width: 820px){
+    body{--hdr:54px;}
+    #topbar{flex-direction:row;align-items:center;padding:0 8px;gap:6px;overflow-x:auto;scrollbar-width:none;}
+    #topbar .chipbar{width:auto;}
+    #consultaBar{flex:1 0 220px;}
+    #consultaBar #btnConsultaEjemplos{display:none;}
+    #hdrSeccion{display:none;}
+    #app{flex-direction:column;}
+    #sidebar, #sidebar.ancho{position:relative;width:auto !important;transform:none !important;box-shadow:none;z-index:auto;}
+    #sidebarBody, #sidebar.ancho #sidebarBody{padding:14px 12px 30px;}
+    body.edif-medio #viewport{flex:0 0 44vh;border-right:none;border-bottom:1px solid var(--border);}
+    body.edif-mini #viewport, body.edif-oculto #viewport{width:170px;height:125px;right:10px;bottom:10px;}
+    body.edif-mini #sidebarBody{padding-bottom:150px;}
+    #edifCubierta span{font-size:11px;padding:4px 9px;}
+  }
 </style>
 </head>
 <body>
@@ -504,6 +604,8 @@ let preferWhatsappEscritorio = false;
 let formasPago = formasPagoPorDefecto();
 // cobros del condominio: se pagan en Bs a la cuenta en bolivares; si es en dolares,
 // queda dicho que fue a la cuenta en $ (no se mezclan). Los proyectos usan formasPago.
+// numero de control del condominio (sql/38): C- cobros, P- pagos, G- gastos
+const nControl = x=>x && x.numero_control ? '<span class="nCtl" title="Número de control">' + esc(x.numero_control) + '</span> ' : '';
 const FORMAS_COBRO = ['Transferencia Bs', 'Pago móvil Bs', 'Depósito en cuenta $', 'Efectivo $', 'Otro'];
 
 function titleCaseName(s){
@@ -1213,7 +1315,7 @@ function pintarAvisoReportados(){
     el = document.createElement('div');
     el.id = 'avisoReportados';
     // abajo, sobre el edificio: arriba tapaba las pestañas del panel
-    const host = document.getElementById('viewport') || document.body;
+    const host = document.body;   // el edificio puede estar en miniatura: los carteles van sobre la pagina
     el.style.cssText = 'position:' + (host === document.body ? 'fixed' : 'absolute') + ';bottom:70px;left:50%;transform:translateX(-50%);z-index:30;background:#c9772f;color:#fff;'
       + 'font:700 13px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:9px 12px 9px 16px;border-radius:12px;'
       + 'box-shadow:0 6px 20px rgba(60,40,10,.3);display:flex;align-items:center;gap:10px;width:max-content;max-width:calc(100% - 24px);';
@@ -1809,7 +1911,80 @@ async function avisarCobro(p){
   }catch(e){}
   avisosCobro.push(av);
   pintarAvisosCobro();
+  enviarReciboCorreo(av);
   if(enCobranza(p.apartamento_id)){ try{ await revisarCobranza(); }catch(e){ console.error(e); } }
+}
+// recibo de pago por correo al propietario: sale solo al registrar o confirmar el cobro.
+// Dice el numero de control, que se pago (recibos o meses) y como queda: deuda pendiente,
+// al dia, o saldo a favor (ese saldo se descuenta solo del proximo recibo al emitirlo, sql/09).
+async function enviarReciboCorreo(av){
+  const apt = apartments.find(x=>normalizeId(x.id) === normalizeId(av.apartamento_id));
+  if(!apt) return;
+  const para = correosDe(apt);
+  if(!para.length){ av.correo = 'sin'; pintarAvisosCobro(); return; }
+  av.correo = 'enviando'; av.correoA = para.join(', ');
+  pintarAvisosCobro();
+  try{
+    if(av.pago_id){
+      const { data } = await db.from('pagos').select('numero_control').eq('id', av.pago_id).maybeSingle();
+      av.control = data && data.numero_control || null;
+      try{
+        const det = await detallePagosDeuda([{id: av.pago_id, monto: av.monto}]);
+        av.aplicado = (det[av.pago_id] || {}).texto || '';
+      }catch(e){ console.error(e); }
+    }
+    const d = findDeuda(apt);
+    const debe = d ? Number(d.monto) || 0 : 0;
+    const f2 = n=>Number(n).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const fecha = fechaCorta(av.fecha || new Date().toISOString().slice(0,10));
+    const estado = debe > 0.005
+      ? {color:'#c1503f', titulo:'Deuda pendiente: $' + f2(debe), texto:'Después de este pago su apartamento mantiene un saldo pendiente de $' + f2(debe) + '.'}
+      : av.favor > 0.005
+        ? {color:'#4f8f6a', titulo:'Saldo a favor: $' + f2(av.favor), texto:'Su apartamento queda al día y con un abono de $' + f2(av.favor) + ' que se descontará automáticamente de su próximo recibo.'}
+        : {color:'#4f8f6a', titulo:'Al día', texto:'Su apartamento queda al día. ¡Gracias!'};
+    const filas = [
+      ['N.º de control', av.control || '—'], ['Apartamento', apt.id], ['Propietario', apt.propietario || ''], ['Fecha del pago', fecha],
+      ['Forma de pago', av.forma_pago || ''], ['Referencia', av.referencia || '—'],
+      ['Monto', '$' + f2(av.monto) + (Number(av.monto_bs) > 0 ? ' (Bs ' + f2(av.monto_bs) + ')' : '')],
+      ['Se aplicó a', av.aplicado || 'Recibos pendientes del apartamento']
+    ];
+    const portal = new URL('portal.html', location.href).href;
+    const html = '<div style="font-family:Segoe UI,Roboto,Arial,sans-serif;max-width:560px;margin:auto;color:#222;">'
+      + '<div style="border-bottom:3px solid #b8862c;padding:10px 0;margin-bottom:14px;"><div style="font-size:18px;font-weight:800;">Junta de Condominio Hatillo Hill</div>'
+      + '<div style="font-size:14px;color:#645d51;">Recibo de pago' + (av.control ? ' · ' + escHtml(av.control) : '') + '</div></div>'
+      + '<p>Estimado(a) ' + escHtml(apt.propietario || 'propietario') + ', confirmamos que recibimos su pago:</p>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:14px;">'
+      + filas.map(([k, v])=>'<tr><td style="padding:7px 10px;border-bottom:1px solid #e5dfd2;color:#645d51;white-space:nowrap;">' + k + '</td><td style="padding:7px 10px;border-bottom:1px solid #e5dfd2;font-weight:600;">' + escHtml(String(v)) + '</td></tr>').join('')
+      + '</table>'
+      + '<div style="margin:16px 0;padding:12px 14px;border-radius:10px;border:2px solid ' + estado.color + ';">'
+      + '<div style="font-size:17px;font-weight:800;color:' + estado.color + ';">' + estado.titulo + '</div><div style="margin-top:4px;">' + estado.texto + '</div></div>'
+      + '<p style="font-size:13px;color:#645d51;">Puede ver su estado de cuenta y sus recibos en el portal: <a href="' + portal + '">' + portal + '</a></p>'
+      + '<p style="font-size:12px;color:#9a958a;">Este correo se generó automáticamente al registrar su pago.</p></div>';
+    const texto = 'Junta de Condominio Hatillo Hill - Recibo de pago\n\n' + filas.map(([k, v])=>k + ': ' + v).join('\n')
+      + '\n\n' + estado.titulo + '. ' + estado.texto + '\n\nPortal: ' + portal;
+    const r = await llamarFuncion('avisos', {correos: [{para: para.join(','), asunto: 'Recibo de pago ' + apt.id + (av.control ? ' · ' + av.control : '') + ' · Hatillo Hill', html, texto}]});
+    if(r && r.enviados){ av.correo = 'ok'; }
+    else { av.correo = 'error'; av.correoError = r && r.fallidos && r.fallidos[0] ? r.fallidos[0].error : 'no se envió'; }
+  }catch(e){ av.correo = 'error'; av.correoError = e.message; }
+  pintarAvisosCobro();
+}
+// cuadro con la deuda o el saldo a favor de un apartamento (formularios de cobro)
+async function pintarSaldoApto(aptId, host){
+  if(!host) return;
+  const apt = apartments.find(a=>a.id === aptId);
+  if(!apt){ host.innerHTML = ''; return; }
+  const d = findDeuda(apt);
+  const debe = d ? Number(d.monto) || 0 : 0;
+  let favor = 0;
+  try{
+    const { data } = await db.from('v_saldo_favor').select('a_favor').eq('apartamento_id', apt.id).maybeSingle();
+    favor = Number(data && data.a_favor) || 0;
+  }catch(e){}
+  host.innerHTML = '<div class="fichaDeuda ' + (debe > 0.005 ? 'debe' : 'aldia') + '" style="margin:8px 0 4px;">'
+    + '<span>' + (debe > 0.005 ? 'Debe' + (d && d.meses ? ' (' + esc(String(d.meses)) + ')' : '') : favor > 0.005 ? 'Al día, con saldo a favor' : 'Al día') + '</span>'
+    + '<span class="monto">' + fmtMoney(debe > 0.005 ? debe : favor) + '</span></div>'
+    + (favor > 0.005 && debe > 0.005 ? '<div class="assumption">Además tiene ' + fmtMoney(favor) + ' a favor.</div>' : '')
+    + (favor > 0.005 ? '<div class="assumption">El saldo a favor se descuenta solo del próximo recibo cuando se emita.</div>' : '');
 }
 function mensajePagoRecibido(av, apt){
   const d = findDeuda(apt);
@@ -1845,7 +2020,16 @@ function pintarAvisosCobro(){
           + (tel ? '' : ' title="Sin teléfono: agrégalo en la ficha del apartamento (Datos)"') + '>📲 ' + esc(a.apartamento_id)
           + ' · ' + fmtMoney(Number(a.monto)) + (tel ? '' : ' ⚠️') + '</button>';
       }).join('')
-    + '<button class="chip" id="avisoCobrosListo" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);">Listo</button></div>';
+    + '<button class="chip" id="avisoCobrosListo" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);">Listo</button></div>'
+    + '<div style="margin-top:8px;font-size:12px;line-height:1.5;">' + avisosCobro.map((a, i)=>{
+        const quien = '<b>' + esc(a.apartamento_id) + '</b>' + (a.control ? ' ' + nControl({numero_control: a.control}) : '') + ': ';
+        if(a.correo === 'ok') return '<div style="color:var(--green);">✉️ ' + quien + 'recibo enviado a ' + esc(a.correoA) + '</div>';
+        if(a.correo === 'enviando') return '<div style="color:var(--sub);">⏳ ' + quien + 'enviando el recibo por correo…</div>';
+        if(a.correo === 'sin') return '<div style="color:var(--amber);">⚠️ ' + quien + 'no tiene correo registrado (agrégalo en la ficha › Datos)</div>';
+        if(a.correo === 'error') return '<div style="color:var(--red);">❌ ' + quien + 'no se envió el correo (' + esc(a.correoError || '') + ') '
+          + '<button class="chip" data-reenviar-cobro="' + i + '" style="padding:2px 8px;background:var(--panel2);">Reintentar</button></div>';
+        return '';
+      }).join('') + '</div>';
   caja.querySelectorAll('[data-aviso-cobro]').forEach(b=>{
     b.onclick = ()=>{
       const av = avisosCobro[Number(b.dataset.avisoCobro)];
@@ -1855,6 +2039,7 @@ function pintarAvisosCobro(){
       sendWhatsAppToApt(apt, ()=>mensajePagoRecibido(av, apt), ()=>{ av.enviado = true; b.style.opacity = '.55'; });
     };
   });
+  caja.querySelectorAll('[data-reenviar-cobro]').forEach(b=>{ b.onclick = ()=>enviarReciboCorreo(avisosCobro[Number(b.dataset.reenviarCobro)]); });
   caja.querySelector('#avisoCobrosListo').onclick = ()=>{ avisosCobro = []; pintarAvisosCobro(); };
 }
 // ----- cobranza con la abogada (sql/35) -----
@@ -2020,7 +2205,7 @@ function pintarAvisoCobranza(){
   if(!el){
     el = document.createElement('div');
     el.id = 'avisoCobranza';
-    const host = document.getElementById('viewport') || document.body;
+    const host = document.body;   // el edificio puede estar en miniatura: los carteles van sobre la pagina
     el.style.cssText = 'position:' + (host === document.body ? 'fixed' : 'absolute') + ';bottom:120px;left:50%;transform:translateX(-50%);z-index:30;background:#7b4fb0;color:#fff;'
       + 'font:700 13px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:9px 12px 9px 16px;border-radius:12px;'
       + 'box-shadow:0 6px 20px rgba(40,20,70,.35);display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:max-content;max-width:calc(100% - 24px);';
@@ -2878,13 +3063,18 @@ let cuentasBanco = [];
 let cuentaActual = null;
 let movimientosCache = [];
 let saldosCuentas = {};   // id de cuenta -> {saldo, sin_conciliar}
+let cuentaCaja = null;    // cuentas_banco tipo 'caja'
+let bancoVista = 'cuenta';
+try{ bancoVista = localStorage.getItem('hh_banco_vista') || 'cuenta'; }catch(e){}
 
 async function cargarBanco(){
   const [ctas, sal] = await Promise.all([
     db.from('cuentas_banco').select('*').eq('activa', true).order('nombre'),
     db.from('v_saldo_cuentas').select('*')
   ]);
-  cuentasBanco = ctas.data || [];
+  // la caja de efectivo (sql/38) va aparte: no recibe estados de cuenta del banco
+  cuentaCaja = (ctas.data || []).find(c=>c.tipo === 'caja') || null;
+  cuentasBanco = (ctas.data || []).filter(c=>c.tipo !== 'caja');
   saldosCuentas = {};
   (sal.data || []).forEach(s=>{ saldosCuentas[s.id] = s; });
   if(!cuentaActual || !cuentasBanco.find(c=>c.id === cuentaActual))
@@ -3099,7 +3289,184 @@ async function sugerenciasPara(mov){
       texto: fechaCorta(e.fecha) + ' · ' + e.concepto + ' · ' + fmtMoney(Number(e.monto_usd)) + (e.monto_bs ? ' · ' + fmtBs(e.monto_bs) : '')}));
 }
 
+// Banco tiene dos vistas: la cuenta bancaria (estados de cuenta y conciliacion) y la caja de efectivo
+function barraBancoVista(){
+  const d = document.createElement('div');
+  d.className = 'presuVista';
+  d.style.margin = '10px 0';
+  d.innerHTML = [['cuenta', '🏦 Cuenta bancaria'], ['caja', '💵 Caja (efectivo)']].map(([k, t])=>
+    '<button data-bv="' + k + '"' + (bancoVista === k ? ' class="activo" style="background:#2f8a8a;border-color:#2f8a8a;"' : '') + '>' + t + '</button>').join('');
+  d.querySelectorAll('[data-bv]').forEach(b=>{ b.onclick = ()=>{
+    bancoVista = b.dataset.bv;
+    try{ localStorage.setItem('hh_banco_vista', bancoVista); }catch(e){}
+    renderSidebar();
+  }; });
+  return d;
+}
 function renderBancoSeccion(body){
+  if(bancoVista === 'caja'){ renderCajaSeccion(body); return; }
+  renderBancoCuenta(body);
+  const sec = body.lastElementChild;
+  const sum = sec && sec.tagName === 'DETAILS' ? sec.querySelector('summary') : null;
+  if(sum) sum.after(barraBancoVista());
+}
+
+// ----- caja de efectivo: todo el efectivo que entra y sale -----
+// Entradas: cobros del condominio, abonos de proyectos y otros ingresos con forma "efectivo".
+// Salidas: pagos (egresos) en efectivo. Ademas entradas y salidas sueltas (deposito al banco,
+// entrega a la junta...) que se guardan como movimientos de la cuenta tipo 'caja'.
+function renderCajaSeccion(body){
+  const sec = document.createElement('details');
+  sec.style.marginTop = '16px';
+  sec.innerHTML = '<summary class="tituloCuenta" style="--c:#2f8a8a;"><span class="tcIcono">💵</span>Banco · Caja de efectivo</summary>';
+  sec.appendChild(barraBancoVista());
+  const cont = document.createElement('div');
+  cont.innerHTML = '<div class="empty">Cargando la caja…</div>';
+  sec.appendChild(cont);
+  body.appendChild(sec);
+  if(!cuentaCaja){
+    cont.innerHTML = '<div class="assumption">Falta ejecutar <b>sql/38_numero_control_y_caja.sql</b> en Supabase para activar la caja de efectivo.</div>';
+    return;
+  }
+  pintarCaja(cont).catch(e=>{ cont.innerHTML = '<div class="assumption" style="color:var(--red);">No se pudo cargar la caja: ' + esc(e.message) + '</div>'; });
+}
+async function datosCaja(){
+  const c = cuentaCaja, desde = c.fecha_saldo || '2000-01-01', ef = '%efectivo%';
+  const [pg, eg, oi, ab, mv] = await Promise.all([
+    db.from('pagos').select('id, numero_control, apartamento_id, fecha, monto, forma_pago, referencia').eq('estado', 'confirmado').ilike('forma_pago', ef).gt('fecha', desde).limit(2000),
+    db.from('egresos').select('id, numero_control, fecha, concepto, monto_usd, forma_pago, referencia').ilike('forma_pago', ef).gt('fecha', desde).limit(2000),
+    db.from('otros_ingresos').select('id, fecha, concepto, monto_usd, forma, referencia').ilike('forma', ef).gt('fecha', desde).limit(2000),
+    db.from('proyecto_abonos').select('id, fecha, monto, forma_pago, referencia, proyecto_aportes(apartamento_id, proyecto_id)').ilike('forma_pago', ef).gt('fecha', desde).limit(2000),
+    db.from('movimientos_banco').select('*').eq('cuenta_id', c.id).limit(2000)
+  ]);
+  const mal = [pg, eg, oi, ab, mv].find(r=>r.error);
+  if(mal) throw new Error(mal.error.message);
+  const nombreApt = id=>(apartments.find(a=>a.id === id) || {}).propietario || '';
+  const L = [];
+  (pg.data || []).forEach(x=>L.push({fecha: x.fecha, ctl: x.numero_control, origen: 'Cobro condominio', desc: x.apartamento_id + ' · ' + nombreApt(x.apartamento_id), monto: Number(x.monto)}));
+  (ab.data || []).forEach(x=>{
+    const a = x.proyecto_aportes || {};
+    const pr = (proyectos || []).find(y=>String(y.id) === String(a.proyecto_id));
+    L.push({fecha: x.fecha, origen: 'Proyecto' + (pr ? ' · ' + pr.nombre : ''), desc: (a.apartamento_id || '') + ' · ' + nombreApt(a.apartamento_id), monto: Number(x.monto)});
+  });
+  (oi.data || []).forEach(x=>L.push({fecha: x.fecha, origen: 'Otro ingreso', desc: x.concepto, monto: Number(x.monto_usd)}));
+  (eg.data || []).forEach(x=>L.push({fecha: x.fecha, ctl: x.numero_control, origen: 'Pago', desc: x.concepto, monto: -Number(x.monto_usd)}));
+  (mv.data || []).forEach(x=>L.push({fecha: x.fecha, origen: Number(x.monto) >= 0 ? 'Entrada suelta' : 'Salida suelta', desc: x.descripcion || '', monto: Number(x.monto), movId: x.id}));
+  L.sort((a, b)=>String(a.fecha).localeCompare(String(b.fecha)));
+  let saldo = Number(c.saldo_inicial) || 0;
+  L.forEach(x=>{ saldo = Math.round((saldo + x.monto) * 100) / 100; x.saldo = saldo; });
+  return {L, saldo};
+}
+async function pintarCaja(cont){
+  const c = cuentaCaja;
+  const {L, saldo} = await datosCaja();
+  const entra = L.filter(x=>x.monto > 0).reduce((s, x)=>s + x.monto, 0);
+  const sale = L.filter(x=>x.monto < 0).reduce((s, x)=>s - x.monto, 0);
+  const hoy = new Date().toISOString().slice(0,10);
+  const puede = puedeDinero();
+  const opcionesApt = '<option value="">— Elige el apartamento —</option>' + apartments.slice().sort((a,b)=>a.id.localeCompare(b.id))
+    .map(a=>'<option value="'+esc(a.id)+'">'+esc(a.id)+' · '+esc(a.propietario||'')+'</option>').join('');
+  cont.innerHTML =
+    '<div class="fichaDeuda aldia" style="margin:6px 0 10px;"><span>Efectivo en caja</span><span class="monto" style="color:' + (saldo < 0 ? 'var(--red)' : 'var(--green)') + ';">' + fmtMoney(saldo) + '</span></div>'
+    + '<div class="comp-item"><span class="t">Saldo de arranque al ' + fechaCorta(c.fecha_saldo || hoy) + '</span><span>' + fmtMoney(c.saldo_inicial) + '</span></div>'
+    + '<div class="comp-item"><span class="t">Entró en efectivo</span><span style="color:var(--green);">' + fmtMoney(entra) + '</span></div>'
+    + '<div class="comp-item"><span class="t">Salió en efectivo</span><span style="color:var(--red);">' + fmtMoney(sale) + '</span></div>'
+    + (puede ? '<details style="margin-top:12px;"><summary style="cursor:pointer;">💵 Registrar efectivo recibido</summary>'
+        + '<div class="form-row"><label>Qué es</label><select id="cjTipo"><option value="cobro">Cobro de condominio (un apartamento)</option><option value="otra">Otra entrada de efectivo</option></select></div>'
+        + '<div class="form-row" id="cjAptRow"><label>Apartamento</label><select id="cjApt">' + opcionesApt + '</select></div>'
+        + '<div id="cjAptInfo"></div>'
+        + '<div class="form-row" id="cjDescRow" style="display:none;"><label>Descripción</label><input type="text" id="cjDesc" placeholder="Ej. retiro del banco para caja chica"></div>'
+        + '<div class="form-row"><label>Fecha</label><input type="date" id="cjFecha" value="' + hoy + '"></div>'
+        + '<div class="form-row"><label>Monto $</label><input type="number" step="0.01" min="0.01" id="cjMonto" placeholder="0.00"></div>'
+        + '<div class="form-row"><label>Nota</label><input type="text" id="cjNota" placeholder="Quién lo entregó, billetes…"></div>'
+        + '<button class="chip" id="cjEntrar" style="background:var(--green);color:#fff;width:100%;margin-top:8px;">💵 Registrar entrada</button>'
+        + '<div class="assumption">Un cobro de condominio queda como cobro "Efectivo $": se aplica a los recibos, lleva número de control y le llega el recibo por correo al propietario.</div>'
+      + '</details>'
+      + '<details style="margin-top:6px;"><summary style="cursor:pointer;">📤 Registrar salida de efectivo</summary>'
+        + '<div class="form-row"><label>Descripción</label><input type="text" id="cjSDesc" placeholder="Ej. depósito en el banco, entrega al tesorero"></div>'
+        + '<div class="form-row"><label>Fecha</label><input type="date" id="cjSFecha" value="' + hoy + '"></div>'
+        + '<div class="form-row"><label>Monto $</label><input type="number" step="0.01" min="0.01" id="cjSMonto" placeholder="0.00"></div>'
+        + '<button class="chip" id="cjSalir" style="background:#d35400;color:#fff;width:100%;margin-top:8px;">📤 Registrar salida</button>'
+        + '<div class="assumption">Para pagarle a un proveedor o a un trabajador en efectivo usa Pagos con la forma "Efectivo": aparece aquí sola.</div>'
+      + '</details>'
+      + '<details style="margin-top:6px;"><summary style="cursor:pointer;">⚙️ Saldo de arranque</summary>'
+        + '<div class="form-row"><label>Efectivo que había</label><input type="number" step="0.01" id="cjIni" value="' + (Number(c.saldo_inicial) || 0) + '"></div>'
+        + '<div class="form-row"><label>A la fecha</label><input type="date" id="cjIniFecha" value="' + (c.fecha_saldo || hoy) + '"></div>'
+        + '<button class="chip" id="cjIniGuardar" style="background:var(--accent);color:#fff;width:100%;margin-top:8px;">Guardar</button>'
+        + '<div class="assumption">Solo cuenta el efectivo con fecha posterior a esta.</div>'
+      + '</details>' : '')
+    + '<h3 class="section" style="margin-top:16px;">Libro de caja (' + L.length + ')</h3>'
+    + (L.length ? '<div class="presuScroll"><table class="tablaPresu"><thead><tr><th>Fecha</th><th style="text-align:left;">Control</th><th style="text-align:left;">Origen</th><th style="text-align:left;">Detalle</th><th>Entra</th><th>Sale</th><th>Saldo</th><th></th></tr></thead><tbody>'
+        + L.slice().reverse().map(x=>'<tr><td style="text-align:left;white-space:nowrap;">' + fechaCorta(x.fecha) + '</td><td style="text-align:left;">' + nControl({numero_control: x.ctl}) + '</td>'
+          + '<td style="text-align:left;">' + esc(x.origen) + '</td><td style="text-align:left;">' + esc(x.desc) + '</td>'
+          + '<td style="color:var(--green);">' + (x.monto > 0 ? fmtMoney(x.monto) : '') + '</td><td style="color:var(--red);">' + (x.monto < 0 ? fmtMoney(-x.monto) : '') + '</td>'
+          + '<td><b>' + fmtMoney(x.saldo) + '</b></td><td>' + (x.movId && puede ? '<button class="accionBtn" data-cj-borrar="' + x.movId + '" title="Borrar este movimiento">✕</button>' : '') + '</td></tr>').join('')
+        + '</tbody></table></div>'
+      : '<div class="empty">Todavía no hay movimientos de efectivo después del ' + fechaCorta(c.fecha_saldo || hoy) + '.</div>');
+  const recargar = ()=>pintarCaja(cont).catch(e=>alert(e.message));
+  cont.querySelectorAll('[data-cj-borrar]').forEach(b=>{ b.onclick = async ()=>{
+    if(!confirm('¿Borrar este movimiento de la caja?')) return;
+    const { error } = await db.from('movimientos_banco').delete().eq('id', b.dataset.cjBorrar);
+    if(error){ alert('No se pudo borrar: ' + error.message); return; }
+    recargar();
+  }; });
+  if(!puede) return;
+  const $ = id=>cont.querySelector('#' + id);
+  $('cjTipo').onchange = ()=>{
+    const cobro = $('cjTipo').value === 'cobro';
+    $('cjAptRow').style.display = cobro ? '' : 'none';
+    $('cjDescRow').style.display = cobro ? 'none' : '';
+    $('cjAptInfo').innerHTML = '';
+  };
+  $('cjApt').onchange = ()=>pintarSaldoApto($('cjApt').value, $('cjAptInfo'));
+  const movSuelto = async (monto, fecha, descripcion)=>{
+    const { error } = await db.from('movimientos_banco').insert({cuenta_id: c.id, fecha, descripcion,
+      referencia: 'CAJA-' + Date.now(), monto, conciliado: true, nota: 'Caja de efectivo'});
+    if(error) throw new Error(error.message);
+  };
+  $('cjEntrar').onclick = async ()=>{
+    const btn = $('cjEntrar');
+    if(btn.disabled) return;
+    const monto = parseFloat($('cjMonto').value), fecha = $('cjFecha').value || hoy, nota = $('cjNota').value.trim();
+    if(!(monto > 0)){ alert('Escribe el monto.'); return; }
+    btn.disabled = true;
+    try{
+      if($('cjTipo').value === 'cobro'){
+        const apto = $('cjApt').value;
+        if(!apto){ alert('Elige el apartamento.'); return; }
+        if(!await validarPagoCondominio(apto, monto, fecha, '')) return;
+        const fila = {apartamento_id: apto, fecha, monto, forma_pago: 'Efectivo $', referencia: null, nota: nota || null,
+          origen: 'tesoreria', estado: 'confirmado', registrado_por: miPerfil.id, confirmado_por: miPerfil.id, confirmado_en: new Date().toISOString()};
+        const { data: nuevo, error } = await db.from('pagos').insert(fila).select('id').single();
+        if(error){ alert('No se pudo registrar el cobro: ' + traducirErrorPago(error.message)); return; }
+        await recargarDeuda();
+        avisarCobro({pago_id: nuevo && nuevo.id, apartamento_id: apto, monto, monto_bs: null, forma_pago: fila.forma_pago, referencia: null, fecha});
+      } else {
+        const desc = $('cjDesc').value.trim();
+        if(!desc){ alert('Escribe qué es esta entrada.'); return; }
+        await movSuelto(monto, fecha, desc + (nota ? ' · ' + nota : ''));
+      }
+      await recargar();
+    }catch(e){ alert('No se pudo registrar: ' + e.message); }
+    finally{ btn.disabled = false; }
+  };
+  $('cjSalir').onclick = async ()=>{
+    const monto = parseFloat($('cjSMonto').value), desc = $('cjSDesc').value.trim();
+    if(!desc){ alert('Escribe a dónde fue el efectivo.'); return; }
+    if(!(monto > 0)){ alert('Escribe el monto.'); return; }
+    if(monto > saldo + 0.005 && !confirm('En caja hay ' + fmtMoney(saldo) + '. ¿Registrar igual una salida de ' + fmtMoney(monto) + '?')) return;
+    try{ await movSuelto(-monto, $('cjSFecha').value || hoy, desc); await recargar(); }
+    catch(e){ alert('No se pudo registrar: ' + e.message); }
+  };
+  $('cjIniGuardar').onclick = async ()=>{
+    const { error } = await db.from('cuentas_banco').update({saldo_inicial: parseFloat($('cjIni').value) || 0, fecha_saldo: $('cjIniFecha').value || null}).eq('id', c.id);
+    if(error){ alert('No se pudo guardar: ' + error.message); return; }
+    await cargarBanco();
+    recargar();
+  };
+}
+
+function renderBancoCuenta(body){
   const sec = document.createElement('details');
   sec.style.marginTop = '16px';
   const c = cuentaDe(cuentaActual);
@@ -5125,7 +5492,7 @@ function renderEgresosSeccion(body){
         : '<div class="empty">No hay nada pendiente por pagar.</div>')
     + '<h3 class="section" style="margin-top:14px;">Pagado en ' + mesLegible(mesActual) + '</h3>'
     + (delMes.length
-        ? delMes.map(e=>'<div class="comp-item"><span class="t">' + esc(e.fecha) + ' · ' + esc(e.concepto)
+        ? delMes.map(e=>'<div class="comp-item"><span class="t">' + nControl(e) + esc(e.fecha) + ' · ' + esc(e.concepto)
             + ' <span style="color:var(--sub);">' + esc(e.forma_pago||'') + (e.referencia ? ' #' + esc(e.referencia) : '') + '</span>'
             + (conceptosDeEgreso(e.id).length ? '<br><span style="color:var(--sub);font-size:11px;">' + conceptosDeEgreso(e.id).map(c=>esc(c.concepto) + ' ' + (Number(c.monto_usd) < 0 ? '−' : '') + fmtMoney(Math.abs(Number(c.monto_usd)))).join(' · ') + '</span>' : '')
             + (e.nota ? '<br><span style="color:var(--sub);font-size:11px;">' + esc(e.nota) + '</span>' : '') + '</span>'
@@ -5868,7 +6235,7 @@ function renderCuentasCompleto(body){
   lista.style.marginTop = '10px';
   lista.innerHTML = gastosCache.length
     ? gastosCache.map(g=>
-        '<div class="comp-item"><span class="t">' + esc(g.fecha) + ' · ' + esc(g.descripcion)
+        '<div class="comp-item"><span class="t">' + nControl(g) + esc(g.fecha) + ' · ' + esc(g.descripcion)
         + (g.categorias_gasto ? ' <span style="color:var(--dim);">(' + esc(g.categorias_gasto.nombre) + ')</span>' : '')
         + (g.prorrateable ? '' : ' <span style="color:var(--amber);">no se reparte</span>')
         + etiquetaSoporte(g)
@@ -6065,6 +6432,7 @@ function renderCuentasCompleto(body){
   secP.innerHTML =
     '<h3 class="section tituloCuenta" style="--c:#4f8f6a;"><span class="tcIcono">💵</span>Registrar un cobro (pago de un vecino)</h3>'
     + '<div class="form-row"><label>Apartamento</label><select id="pApt">'+opcionesApt+'</select></div>'
+    + '<div id="pAptInfo"></div>'
     + '<div class="form-row"><label>Fecha</label><input type="date" id="pFecha" value="'+new Date().toISOString().slice(0,10)+'"></div>'
     + '<div class="form-row"><label>Forma</label><select id="pForma">'
       + FORMAS_COBRO.map(f=>'<option>'+f+'</option>').join('') + '</select></div>'
@@ -6075,6 +6443,7 @@ function renderCuentasCompleto(body){
     + '<div class="assumption">El pago se aplica solo al recibo más viejo que tenga pendiente. Si sobra, queda a favor.</div>';
   body.appendChild(secP);
   const datosBsCobro = conectarCobroBs({forma: 'pForma', fecha: 'pFecha', monto: 'pMonto', prefijo: 'pc'});
+  document.getElementById('pApt').addEventListener('change', ()=>pintarSaldoApto(document.getElementById('pApt').value, document.getElementById('pAptInfo')));
 
   document.getElementById('pRegistrar').onclick = async ()=>{
     if(!document.getElementById('pApt').value){ alert('Elige el apartamento.'); return; }
@@ -6123,7 +6492,7 @@ function renderCuentasCompleto(body){
   secUlt.innerHTML = '<h3 class="section tituloCuenta" style="--c:#6b7a5a;"><span class="tcIcono">📋</span>Últimos cobros</h3>'
     + (pagosCache.length
         ? pagosCache.map(p=>
-            '<div class="comp-item"><span class="t">' + esc(p.fecha) + ' · ' + esc(p.apartamento_id)
+            '<div class="comp-item"><span class="t">' + nControl(p) + esc(p.fecha) + ' · ' + esc(p.apartamento_id)
             + ' · ' + esc((apartments.find(a=>a.id===p.apartamento_id) || {}).propietario || '')
             + ' <span style="color:var(--dim);">' + escHtml(p.forma_pago||'') + (p.referencia ? ' · Ref. ' + escHtml(p.referencia) : '') + '</span></span>'
             + '<span style="color:var(--green);display:flex;align-items:center;gap:4px;white-space:nowrap;">' + fmtMoney(p.monto) + botonesPagoAdmin(p.id) + '</span></div>').join('')
@@ -7124,7 +7493,7 @@ async function xlsDeudaRecibos(){
   // cada pago confirmado, para validar el "Pagado $" de los deudores
   const pagosDet = pagos.filter(p=>p.estado === 'confirmado')
     .sort((x, y)=>x.apartamento_id.localeCompare(y.apartamento_id) || String(x.fecha).localeCompare(String(y.fecha)))
-    .map(p=>({'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id), 'Fecha': xlsFecha(p.fecha),
+    .map(p=>({'N.º control': p.numero_control || '', 'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id), 'Fecha': xlsFecha(p.fecha),
       'Forma de pago': p.forma_pago || '', 'Banco': p.banco || '', 'Referencia': p.referencia || '', 'Monto $': xlsNum(p.monto)}));
   return [['Deudores condominio', filas], ['Recibos pendientes', xlsConTotal(detalle, 'Apartamento')],
     ['Pagos condominio', xlsConTotal(pagosDet, 'Apartamento')], ['Pagos por forma', xlsPorForma(pagosDet)]];
@@ -7174,7 +7543,7 @@ async function xlsCobros(desde, hasta){
   proys.forEach(p=>{ nombreProy[p.id] = p.nombre; });
   aportes.forEach(ap=>{ aporte[ap.id] = ap; });
   const cond = pagos.filter(p=>xlsEnRango(p.fecha, desde, hasta)).map(p=>({
-    'Fecha': xlsFecha(p.fecha), 'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id),
+    'N.º control': p.numero_control || '', 'Fecha': xlsFecha(p.fecha), 'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id),
     'Monto $': xlsNum(p.monto), 'Forma de pago': p.forma_pago || '', 'Banco': p.banco || '', 'Referencia': p.referencia || '',
     'Estado': p.estado || '', 'Origen': p.origen === 'portal' ? 'Reportado en el portal' : 'Tesorería', 'Nota': p.nota || ''
   }));
@@ -7208,13 +7577,13 @@ async function xlsPagosRealizados(desde, hasta){
   const {gastos, cat, gasto, egresos, pagadoGasto} = await xlsGastosBase();
   const pagos = egresos.filter(e=>xlsEnRango(e.fecha, desde, hasta)).map(e=>{
     const g = gasto[e.gasto_id] || {};
-    return {'Fecha': xlsFecha(e.fecha), 'Tipo': XLS_TIPO_EGRESO[e.tipo] || e.tipo, 'Concepto': e.concepto || '',
+    return {'N.º control': e.numero_control || '', 'Fecha': xlsFecha(e.fecha), 'Tipo': XLS_TIPO_EGRESO[e.tipo] || e.tipo, 'Concepto': e.concepto || '',
       'Proveedor': g.proveedor || '', 'Factura': g.documento || '', 'Categoría': cat[g.categoria_id] || '',
       'Monto $': xlsNum(e.monto_usd), 'Tasa BCV': e.tasa_bcv != null ? Number(e.tasa_bcv) : '', 'Monto Bs': xlsNum(e.monto_bs),
       'Forma de pago': e.forma_pago || '', 'Referencia': e.referencia || '', 'Nota': e.nota || ''};
   });
   const facturas = gastos.filter(g=>xlsEnRango(g.fecha, desde, hasta)).map(g=>({
-    'Mes': mesLegible(g.periodo_id), 'Fecha': xlsFecha(g.fecha), 'Categoría': cat[g.categoria_id] || '', 'Descripción': g.descripcion || '',
+    'N.º control': g.numero_control || '', 'Mes': mesLegible(g.periodo_id), 'Fecha': xlsFecha(g.fecha), 'Categoría': cat[g.categoria_id] || '', 'Descripción': g.descripcion || '',
     'Proveedor': g.proveedor || '', 'Factura': g.documento || '', 'Monto $': xlsNum(g.monto),
     'Pagado $': xlsNum(pagadoGasto[g.id] || 0), 'Por pagar $': xlsNum(Math.max(0, Number(g.monto) - (pagadoGasto[g.id] || 0))),
     'Entra al recibo': xlsSiNo(g.prorrateable), 'Origen': g.origen === 'nomina' ? 'Nómina' : 'Manual'
@@ -7312,7 +7681,7 @@ async function xlsCobranza(desde, hasta){
     .sort((x, y)=>String(x.fecha).localeCompare(String(y.fecha)) || x.apartamento_id.localeCompare(y.apartamento_id));
   const det = await detallePagosDeuda(enRango);
   const filas = enRango.map(p=>({
-    'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id), 'Fecha': xlsFecha(p.fecha),
+    'N.º control': p.numero_control || '', 'Apartamento': p.apartamento_id, 'Propietario': xlsNombre(aptos, p.apartamento_id), 'Fecha': xlsFecha(p.fecha),
     'Monto $': xlsNum(p.monto), 'Monto Bs': Number(p.monto_bs) > 0 ? xlsNum(p.monto_bs) : '', 'Tasa BCV': p.tasa_bcv ? Number(p.tasa_bcv) : '',
     'Forma de pago': p.forma_pago || '', 'Banco': p.banco || '', 'Referencia': p.referencia || '',
     'Qué paga': (det[p.id] || {}).texto || '', 'Saldo a favor $': (det[p.id] || {}).favor ? xlsNum(det[p.id].favor) : '',
@@ -9584,6 +9953,7 @@ function renderProyectoDetalle(body, p){
     <div id="aportesListHost"></div>
     <h3 class="section" style="margin-top:16px;">Registrar abono</h3>
     <div class="form-row"><label>Apartamento</label><select id="ab_apt">${opciones}</select></div>
+    <div id="ab_info"></div>
     <div class="form-row two">
       <div><label>Monto abonado (USD)</label><input id="ab_monto" type="number" step="0.01"></div>
       <div><label>Forma de pago</label>
@@ -9714,6 +10084,30 @@ function renderProyectoDetalle(body, p){
   const verRefAbono = ()=>{ document.getElementById('ab_ref_row').style.display = formaPideReferencia(abForma.value) ? '' : 'none'; };
   abForma.onchange = verRefAbono;
   verRefAbono();
+  // al elegir el apartamento se ve cuánto debe en este proyecto y sus últimos abonos
+  const abApt = document.getElementById('ab_apt');
+  const pintarInfoAbono = ()=>{
+    const host = document.getElementById('ab_info');
+    const ap = (p.aportes||[]).find(x=>x.apt_id===abApt.value);
+    if(!host) return;
+    if(!ap){ host.innerHTML = ''; return; }
+    const aporte = Number(ap.monto_aporte)||0, pagado = Number(ap.monto_pagado)||0;
+    const pend = Math.max(0, Math.round((aporte - pagado) * 100) / 100);
+    const hist = (ap.historial||[]).slice().sort((x,y)=>String(y.fecha||'').localeCompare(String(x.fecha||'')));
+    host.innerHTML = '<div class="fichaDeuda ' + (pend > 0.005 ? 'debe' : 'aldia') + '" style="margin:10px 0 6px;">'
+      + '<span><b>' + esc(ap.apt_id) + '</b> ' + (pend > 0.005 ? 'debe en ' + esc(p.nombre) : 'pagó todo su aporte') + '</span>'
+      + '<span class="monto">$' + pend.toFixed(2) + '</span></div>'
+      + '<div class="statline"><span>Aporte que le toca</span><b>$' + aporte.toFixed(2) + '</b></div>'
+      + '<div class="statline"><span>Pagado hasta hoy (' + hist.length + (hist.length === 1 ? ' abono' : ' abonos') + ')</span><b style="color:var(--green);">$' + pagado.toFixed(2) + '</b></div>'
+      + (hist.length ? '<div style="font-size:12px;color:var(--sub);margin:6px 0 4px;">Últimos abonos: '
+          + hist.slice(0, 4).map(h=>fechaCorta(String(h.fecha||'').slice(0,10)) + ' $' + (Number(h.monto)||0).toFixed(2) + (h.forma_pago ? ' (' + esc(h.forma_pago) + ')' : '')).join(' · ') + '</div>' : '')
+      + (pend > 0.005 ? '<button class="chip" id="ab_usarPend" style="background:var(--panel2);border:1px solid var(--border);margin:4px 0 8px;">Abonar todo lo pendiente ($' + pend.toFixed(2) + ')</button>' : '');
+    const usar = document.getElementById('ab_usarPend');
+    if(usar) usar.onclick = ()=>{ document.getElementById('ab_monto').value = pend.toFixed(2); };
+    document.getElementById('ab_monto').placeholder = pend > 0.005 ? 'Pendiente $' + pend.toFixed(2) : '';
+  };
+  abApt.addEventListener('change', pintarInfoAbono);
+  pintarInfoAbono();
   document.getElementById('btnAbonar').onclick = async ()=>{
     const aptId = document.getElementById('ab_apt').value;
     const monto = parseFloat(document.getElementById('ab_monto').value);
@@ -11098,6 +11492,141 @@ mobileToggle.addEventListener('click', ()=>{
 });
 window.addEventListener('resize', checkMobile);
 checkMobile();
+
+// ---------- diseño 2026-11: barra superior, menu hamburguesa y edificio en miniatura ----------
+(function(){
+  const app = document.getElementById('app');
+  const topbar = document.getElementById('topbar');
+  const viewport = document.getElementById('viewport');
+  // la barra superior y las ventanas flotantes salen del visor 3D: el visor puede ser una miniatura
+  document.body.insertBefore(topbar, app);
+  ['dashboardModal', 'fichaModal'].forEach(id=>{ const el = document.getElementById(id); if(el) document.body.appendChild(el); });
+
+  // boton hamburguesa + titulo de la seccion actual
+  const btnMenu = document.createElement('button');
+  btnMenu.id = 'btnMenu';
+  btnMenu.title = 'Menú';
+  btnMenu.textContent = '☰';
+  topbar.insertBefore(btnMenu, topbar.firstChild);
+  const hdr = document.createElement('div');
+  hdr.id = 'hdrSeccion';
+  const brand = topbar.querySelector('.brand');
+  topbar.insertBefore(hdr, brand ? brand.nextSibling : btnMenu.nextSibling);
+
+  // cajon del menu
+  const velo = document.createElement('div');
+  velo.id = 'navVelo';
+  const drawer = document.createElement('nav');
+  drawer.id = 'navDrawer';
+  drawer.innerHTML = '<div class="navCab"><div>HH <span>Control</span></div><button class="backbtn" id="navCerrar">✕</button></div><div class="navCuerpo" id="navCuerpo"></div>';
+  document.body.appendChild(velo);
+  document.body.appendChild(drawer);
+  const cuerpo = drawer.querySelector('#navCuerpo');
+
+  const pestanas = ()=>Array.from(document.querySelectorAll('#sidebarTabs .stab[data-tab]'))
+    .filter(t=>t.style.display !== 'none')
+    .map(t=>({k: t.dataset.tab, icono: t.querySelector('.stabIcon').textContent, nombre: t.querySelector('.stabLabel').textContent}));
+  function subsAdmin(){
+    let verU = false, verA = false;
+    try{ verU = rolesAsignables().length > 0; }catch(e){}
+    try{ verA = tieneRol('admin', 'junta'); }catch(e){}
+    return SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verU) && (k !== 'auditoria' || verA));
+  }
+  let adminAbierto = null;
+  function pintarMenu(){
+    const abierto = adminAbierto === null ? currentTab === 'cuentas' : adminAbierto;
+    let h = '<div class="navGrupo">Secciones</div>';
+    pestanas().forEach(p=>{
+      if(p.k === 'cuentas'){
+        h += '<button class="navItem' + (abierto ? ' abierto' : '') + (currentTab === 'cuentas' && !abierto ? ' activo' : '') + '" data-nav-admin><span class="ni">' + p.icono + '</span>' + p.nombre + '<span class="chev">▶</span></button>'
+          + '<div class="navSub' + (abierto ? ' open' : '') + '">'
+          + subsAdmin().map(([k, etiqueta, color])=>{
+              const m = etiqueta.match(/^(\S+)\s+(.*)$/) || [null, '', etiqueta];
+              const enCaja = currentTab === 'cuentas' && adminSub === 'banco' && bancoVista === 'caja';
+              return '<button class="navItem' + (currentTab === 'cuentas' && adminSub === k && !(k === 'banco' && enCaja) ? ' activo' : '') + '" style="--c:' + color + ';" data-nav-sub="' + k + '"><span class="ni">' + m[1] + '</span>' + m[2] + '</button>'
+                + (k === 'banco' ? '<button class="navItem' + (enCaja ? ' activo' : '') + '" style="--c:' + color + ';padding-left:28px;" data-nav-sub="banco" data-nav-caja="1"><span class="ni">💵</span>Caja (efectivo)</button>' : '');
+            }).join('')
+          + '</div>';
+      } else {
+        h += '<button class="navItem' + (currentTab === p.k ? ' activo' : '') + '" data-nav-tab="' + p.k + '"><span class="ni">' + p.icono + '</span>' + p.nombre + '</button>';
+      }
+    });
+    h += '<div class="navGrupo">Edificio</div>'
+      + '<button class="navItem' + (modo === 'medio' ? ' activo' : '') + '" data-nav-edif="medio"><span class="ni">🏢</span>Media pantalla</button>'
+      + '<button class="navItem' + (modo === 'mini' ? ' activo' : '') + '" data-nav-edif="mini"><span class="ni">🔳</span>Miniatura</button>'
+      + '<button class="navItem' + (modo === 'oculto' ? ' activo' : '') + '" data-nav-edif="oculto"><span class="ni">🙈</span>Ocultar</button>'
+      + '<div class="navGrupo" id="navRespaldo">Respaldo</div>';
+    cuerpo.innerHTML = h;
+    // los botones de respaldo conservan sus eventos: se mudan al cajon
+    const ancla = cuerpo.querySelector('#navRespaldo');
+    ['localBackupBar', 'importBackupBar'].forEach(id=>{ const el = document.getElementById(id); if(el) cuerpo.appendChild(el); });
+    if(!cuerpo.querySelector('.chipbar:not([style*="display: none"])')) ancla.style.display = 'none';
+    cuerpo.querySelectorAll('[data-nav-tab]').forEach(b=>{ b.onclick = ()=>{ currentTab = b.dataset.navTab; cerrar(); renderSidebar(); irArriba(); }; });
+    cuerpo.querySelector('[data-nav-admin]') && (cuerpo.querySelector('[data-nav-admin]').onclick = ()=>{ adminAbierto = !abierto; pintarMenu(); });
+    cuerpo.querySelectorAll('[data-nav-sub]').forEach(b=>{ b.onclick = ()=>{
+      adminSub = b.dataset.navSub;
+      try{ localStorage.setItem('hh_admin_sub', adminSub); }catch(e){}
+      if(adminSub === 'banco'){
+        bancoVista = b.dataset.navCaja ? 'caja' : 'cuenta';
+        try{ localStorage.setItem('hh_banco_vista', bancoVista); }catch(e){}
+      }
+      currentTab = 'cuentas'; cerrar(); renderSidebar(); irArriba();
+    }; });
+    cuerpo.querySelectorAll('[data-nav-edif]').forEach(b=>{ b.onclick = ()=>{ ponerModo(b.dataset.navEdif); cerrar(); }; });
+  }
+  function irArriba(){ document.getElementById('sidebarBody').scrollTop = 0; }
+  function abrir(){ adminAbierto = null; pintarMenu(); drawer.classList.add('open'); velo.classList.add('open'); }
+  function cerrar(){ drawer.classList.remove('open'); velo.classList.remove('open'); }
+  btnMenu.onclick = ()=>{ drawer.classList.contains('open') ? cerrar() : abrir(); };
+  velo.onclick = cerrar;
+  drawer.querySelector('#navCerrar').onclick = cerrar;
+  document.addEventListener('keydown', e=>{ if(e.key === 'Escape' && drawer.classList.contains('open')) cerrar(); });
+
+  // el titulo de arriba sigue a la seccion abierta
+  function pintarTitulo(){
+    const p = pestanas().find(x=>x.k === currentTab) || {icono: '📋', nombre: 'Lista'};
+    let sub = '';
+    if(currentTab === 'cuentas'){
+      const s = SUBMENU_ADMIN.find(([k])=>k === adminSub);
+      if(s) sub = ' <small>› ' + s[1] + (adminSub === 'banco' && bancoVista === 'caja' ? ' › 💵 Caja' : '') + '</small>';
+    }
+    hdr.innerHTML = p.icono + ' ' + p.nombre + sub;
+    if(drawer.classList.contains('open')) pintarMenu();
+  }
+  const renderOriginal = renderSidebar;
+  renderSidebar = function(){ renderOriginal.apply(this, arguments); pintarTitulo(); };
+  pintarTitulo();
+
+  // edificio: miniatura (clic = media pantalla), media pantalla, u oculto
+  const cubierta = document.createElement('div');
+  cubierta.id = 'edifCubierta';
+  cubierta.title = 'Ver el edificio en media pantalla';
+  cubierta.innerHTML = '<span>🔍 Ampliar edificio</span>';
+  viewport.appendChild(cubierta);
+  const ctl = document.createElement('div');
+  ctl.className = 'edifCtl';
+  ctl.innerHTML = '<button class="soloMedio" data-modo="mini" title="Reducir a miniatura">🗕 Miniatura</button>'
+    + '<button class="soloMini" data-modo="oculto" title="Ocultar el edificio">✕</button>';
+  viewport.appendChild(ctl);
+  const pastilla = document.createElement('button');
+  pastilla.id = 'edifPastilla';
+  pastilla.textContent = '🏢 Edificio';
+  document.body.appendChild(pastilla);
+  let modo = 'mini';
+  try{ modo = localStorage.getItem('hh_edificio_modo') || 'mini'; }catch(e){}
+  function ponerModo(m){
+    modo = m;
+    document.body.classList.remove('edif-mini', 'edif-medio', 'edif-oculto');
+    document.body.classList.add('edif-' + m);
+    try{ localStorage.setItem('hh_edificio_modo', m); }catch(e){}
+    requestAnimationFrame(()=>{ try{ resize(); }catch(e){} });
+  }
+  cubierta.addEventListener('click', e=>{ e.stopPropagation(); ponerModo('medio'); });
+  ctl.querySelectorAll('[data-modo]').forEach(b=>{ b.addEventListener('click', e=>{ e.stopPropagation(); ponerModo(b.dataset.modo); }); });
+  pastilla.onclick = ()=>ponerModo('mini');
+  if(window.ResizeObserver) new ResizeObserver(()=>{ try{ resize(); }catch(e){} }).observe(viewport);
+  ponerModo(modo);
+})();
 
 // ---------- init ----------
 async function init(){
