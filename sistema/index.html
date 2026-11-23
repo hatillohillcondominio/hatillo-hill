@@ -462,6 +462,30 @@
   #calcPop .calcCab{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:14px;margin-bottom:6px;}
   #calcPop .tituloCuenta{display:none;}
   #calcPop > div > div{margin-top:0 !important;}
+
+  /* ===== AJUSTE 2026-11-23 (b): barra de arriba en una sola línea, preguntas dentro del menú, 4 fichas por fila ===== */
+  body{--hdr:50px;}
+  #topbar{gap:8px;padding:0 12px;}
+  #topbar .brand{font-size:12.5px;gap:6px;}
+  #topbar .brandLogo{height:22px;}
+  #hdrSeccion{font-size:13px;padding-left:8px;}
+  #hdrSeccion small{font-size:11.5px;}
+  #btnMenu{width:36px;height:34px;font-size:17px;}
+  #btnCalc{width:34px;height:34px;font-size:16px;}
+  #topbar .chipbar{padding:3px;gap:4px;border-radius:10px;}
+  #topbar .chip{font-size:11.5px;padding:5px 8px;}
+  #navDrawer #consultaBar{display:flex;flex:none;max-width:none;margin:10px 10px 0;padding:5px;gap:5px;}
+  #navDrawer #consultaBar input{flex:1;min-width:0;font-size:12.5px;}
+  #navDrawer #consultaBar button{padding:7px 9px;font-size:12px;}
+  #consultaPanel{position:fixed;left:16px;right:auto;width:min(640px, calc(100vw - 32px));z-index:145;}
+  #listaBuscar{position:sticky;top:-18px;z-index:6;margin:-18px 0 12px;padding:10px 12px;border-radius:0 0 10px 10px;background:var(--panel);
+    box-shadow:0 4px 10px rgba(60,50,30,.08);}
+  @media (min-width: 1100px){ #listHost{grid-template-columns:repeat(4, minmax(0, 1fr));} }
+  @media (min-width: 821px){
+    #sidebarBody > *, #sidebar.ancho #sidebarBody > *, #sidebarBody > #listHost{max-width:1180px;}
+    /* botones y cajas sueltos también se centran (son inline-block) */
+    #sidebarBody > button, #sidebarBody > input, #sidebarBody > select, #sidebarBody > textarea{display:block;width:100%;}
+  }
 </style>
 </head>
 <body>
@@ -477,7 +501,6 @@
       <div class="chipbar" id="importBackupBar"><button class="chip" id="btnImportBackup" title="Carga el hatillo_hill_datos.json de tu carpeta de respaldo local — util si editaste sin internet y quieres subir esos cambios a Drive.">📥 Importar respaldo local</button></div>
       <div id="consultaBar">
         <input type="text" id="consultaInput" placeholder="Pregunta lo que sea: deuda de A2-3, recaudado del pozo, quién no ha pagado, resumen...">
-        <button id="btnConsultaEjemplos" title="Ver ejemplos de preguntas">💡 Ejemplos</button>
         <button id="btnConsultaPreguntar" title="Preguntar">🔎 Preguntar</button>
       </div>
       <div id="consultaPanel">
@@ -1587,12 +1610,12 @@ function setLocalBackupStatus(state){
   const labels = {
     disconnected: '🗂️ Activar respaldo local',
     connected: '🗂️ Respaldo local activo',
-    needsperm: '🗂️ Reautorizar carpeta local',
+    needsperm: '🗂️ Reautorizar carpeta (elige "Permitir en cada visita")',
     error: '🗂️ Error de respaldo local (toca para reintentar)',
     unsupported: '🗂️ Respaldo local no disponible en este navegador'
   };
   btn.style.background = colors[state] || colors.disconnected;
-  btn.textContent = labels[state] || labels.disconnected;
+  btn.textContent = (labels[state] || labels.disconnected) + (state === 'connected' && typeof etiquetaRespaldo === 'function' ? etiquetaRespaldo() : '');
 }
 
 async function writeLocalBackupNow(snap){
@@ -1644,12 +1667,113 @@ async function activateLocalBackup(){
     localBackupDirHandle = handle;
     setLocalBackupStatus('connected');
     await saveFullSnapshot();
+    if(typeof respaldoCompleto === 'function') respaldoCompleto(true);
   }catch(e){
     if(e.name!=='AbortError'){ console.error(e); setLocalBackupStatus('error'); }
   }
 }
 document.getElementById('btnLocalBackup').addEventListener('click', activateLocalBackup);
 restoreLocalBackupFolder();
+
+// ---------- respaldo COMPLETO de la base (2026-11-23) ----------
+// Baja todas las tablas de la base a un archivo con fecha y hora en la carpeta de respaldo:
+// al entrar y luego cada 4 horas mientras el sistema esté abierto. Borra los de más de 30 días.
+const RESPALDO_CADA_HORAS = 4;
+const RESPALDO_DIAS_GUARDAR = 30;
+const RESPALDO_PREFIJO = 'hatillo_hill_respaldo_';
+const RESPALDO_TABLAS = ['apartamentos', 'apartamento_componentes', 'estacionamientos', 'maleteros', 'perfiles', 'periodos',
+  'presupuestos', 'presupuesto_partidas', 'categorias_gasto', 'gastos', 'facturas_por_pagar', 'egresos', 'egreso_conceptos',
+  'pagos', 'aplicaciones_pago', 'recibos', 'recibo_detalle', 'cargos', 'multas', 'proyectos', 'proyecto_aportes', 'proyecto_abonos',
+  'empleados', 'empleado_conceptos', 'nominas', 'nomina_lineas', 'nomina_detalle', 'prestamos_empleado', 'cuentas_banco',
+  'movimientos_banco', 'otros_ingresos', 'ingresos_fijos', 'proveedores', 'productos', 'inventario_movimientos',
+  'solicitudes_material', 'solicitud_items', 'configuracion', 'notas', 'cobranza_abogados', 'cobranza_apartamentos',
+  'cobranza_avisos', 'auditoria'];
+let respaldoEnCurso = false;
+const respaldoUltimo = ()=>{ try{ return localStorage.getItem('hh_respaldo_ultimo') || ''; }catch(e){ return ''; } };
+function etiquetaRespaldo(){
+  const u = respaldoUltimo();
+  if(!u) return '';
+  const d = new Date(u);
+  return ' · último ' + d.toLocaleString('es-VE', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'});
+}
+async function respaldoTraer(tabla){
+  let todo = [], desde = 0, ordenar = true;
+  for(;;){
+    let q = db.from(tabla).select('*');
+    if(ordenar) q = q.order('id', {ascending: true});
+    const r = await q.range(desde, desde + 999);
+    if(r.error){
+      if(ordenar && /id/.test(r.error.message)){ ordenar = false; todo = []; desde = 0; continue; }
+      throw new Error(r.error.message);
+    }
+    todo = todo.concat(r.data || []);
+    if(!r.data || r.data.length < 1000) break;
+    desde += 1000;
+  }
+  return todo;
+}
+async function respaldoCompleto(manual){
+  if(respaldoEnCurso || !db || !miPerfil || miPerfil.rol === 'vecino') return;
+  if(!localBackupDirHandle){ if(manual) alert('Primero activa la carpeta de respaldo (☰ › Respaldo › Activar respaldo local).'); return; }
+  let perm = await localBackupDirHandle.queryPermission({mode: 'readwrite'});
+  if(perm !== 'granted' && manual) perm = await localBackupDirHandle.requestPermission({mode: 'readwrite'});
+  if(perm !== 'granted'){ setLocalBackupStatus('needsperm'); return; }
+  respaldoEnCurso = true;
+  const btnAhora = document.getElementById('btnRespaldoAhora');
+  if(btnAhora){ btnAhora.disabled = true; btnAhora.textContent = '⏳ Respaldando…'; }
+  try{
+    const tablas = {}, errores = {};
+    for(const t of RESPALDO_TABLAS){
+      try{ tablas[t] = await respaldoTraer(t); }catch(e){ errores[t] = e.message || String(e); }
+    }
+    const ahora = new Date();
+    const sello = ahora.toLocaleString('sv-SE', {timeZone: 'America/Caracas'}).slice(0, 16).replace(' ', '_').replace(':', '');
+    const contenido = {sistema: 'HH Control · Conjunto Residencial Hatillo Hill', generado: ahora.toISOString(),
+      usuario: miPerfil.correo || '', filas: Object.fromEntries(Object.entries(tablas).map(([k, v])=>[k, v.length])), errores, tablas};
+    const fh = await localBackupDirHandle.getFileHandle(RESPALDO_PREFIJO + sello + '.json', {create: true});
+    const w = await fh.createWritable();
+    await w.write(JSON.stringify(contenido));
+    await w.close();
+    try{ localStorage.setItem('hh_respaldo_ultimo', ahora.toISOString()); }catch(e){}
+    // se borran los de más de 30 días
+    const limite = ahora.getTime() - RESPALDO_DIAS_GUARDAR * 86400000;
+    for await (const [nombre, h] of localBackupDirHandle.entries()){
+      if(h.kind !== 'file' || !nombre.startsWith(RESPALDO_PREFIJO)) continue;
+      const m = nombre.match(/(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})/);
+      if(m && new Date(m[1] + 'T' + m[2] + ':' + m[3] + ':00-04:00').getTime() < limite){
+        try{ await localBackupDirHandle.removeEntry(nombre); }catch(e){}
+      }
+    }
+    setLocalBackupStatus('connected');
+    if(manual) alert('Respaldo guardado: ' + RESPALDO_PREFIJO + sello + '.json'
+      + (Object.keys(errores).length ? '\n\nNo se pudieron leer: ' + Object.keys(errores).join(', ') : ''));
+  }catch(e){
+    console.error(e);
+    setLocalBackupStatus('error');
+    if(manual) alert('No se pudo guardar el respaldo: ' + (e.message || e));
+  }finally{
+    respaldoEnCurso = false;
+    if(btnAhora){ btnAhora.disabled = false; btnAhora.textContent = '💾 Respaldar ahora'; }
+  }
+}
+// revisa cada 10 minutos si ya toca (al entrar toca enseguida si pasaron 4 horas)
+function respaldoSiToca(){
+  const u = respaldoUltimo();
+  if(!u || Date.now() - new Date(u).getTime() >= RESPALDO_CADA_HORAS * 3600000) respaldoCompleto(false);
+}
+setTimeout(respaldoSiToca, 20000);
+setInterval(respaldoSiToca, 10 * 60 * 1000);
+(function(){
+  const bar = document.getElementById('localBackupBar');
+  if(!bar) return;
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.id = 'btnRespaldoAhora';
+  b.title = 'Baja ahora todas las tablas de la base a un archivo con fecha en la carpeta de respaldo';
+  b.textContent = '💾 Respaldar ahora';
+  b.onclick = ()=>respaldoCompleto(true);
+  bar.appendChild(b);
+})();
 
 // cierra el ciclo offline -> online: si se edito sin internet en la copia offline (que escribe
 // al mismo hatillo_hill_datos.json en esta carpeta), este boton carga esos cambios aqui y, al
@@ -9399,6 +9523,12 @@ function imprimirSolicitud(s, D, quien){
 }
 
 function renderListaTab(body){
+  const search = document.createElement('input');
+  search.className='searchbox';
+  search.id = 'listaBuscar';
+  search.placeholder='Buscar apartamento o propietario (ej. apb2, camacho, pb, a)...';
+  search.oninput = ()=>{ renderList(body, search.value.toLowerCase()); };
+  body.appendChild(search);
   const totalCondoDebt = deudaRows.reduce((s,r)=>s+(r.monto||0),0);
   const aptsConCondoDebt = apartments.filter(a=>findDeuda(a)).length;
   const totalProjDebt = proyectos.reduce((s,p)=>s+(p.aportes||[]).reduce((s2,ap)=>s2+Math.max(0,(ap.monto_aporte||0)-(ap.monto_pagado||0)),0),0);
@@ -9418,11 +9548,6 @@ function renderListaTab(body){
   btnExportXls.onclick = exportApartmentsToExcel;
   body.appendChild(btnExportXls);
 
-  const search = document.createElement('input');
-  search.className='searchbox';
-  search.placeholder='Buscar (ej. apb2, camacho, pb, a)...';
-  search.oninput = ()=>{ renderList(body, search.value.toLowerCase()); };
-  body.appendChild(search);
   const listHost = document.createElement('div');
   listHost.id='listHost';
   body.appendChild(listHost);
@@ -11570,10 +11695,9 @@ function responderConsulta(rawQuery){
   return null;
 }
 function posicionarConsultaPanel(){
-  const bar = document.getElementById('consultaBar');
   const panel = document.getElementById('consultaPanel');
-  const rect = bar.getBoundingClientRect();
-  panel.style.top = (rect.bottom + 6) + 'px';
+  const top = document.getElementById('topbar').getBoundingClientRect().bottom;
+  panel.style.top = (top + 8) + 'px';
 }
 function mostrarEjemplosConsulta(){
   posicionarConsultaPanel();
@@ -11609,7 +11733,6 @@ function ejecutarConsulta(){
 }
 document.getElementById('btnConsultaPreguntar').addEventListener('click', ejecutarConsulta);
 document.getElementById('consultaInput').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); ejecutarConsulta(); } });
-document.getElementById('btnConsultaEjemplos').addEventListener('click', mostrarEjemplosConsulta);
 document.getElementById('consultaPanelBody').addEventListener('click', (e)=>{
   const aptBtn = e.target.closest('.consultaAptLink');
   if(aptBtn){
@@ -12538,6 +12661,17 @@ checkMobile();
   document.body.appendChild(velo);
   document.body.appendChild(drawer);
   const cuerpo = drawer.querySelector('#navCuerpo');
+  // "Pregunta lo que sea" vive dentro del menú, arriba; las respuestas salen en un panel sobre la página
+  const consultaBar = document.getElementById('consultaBar');
+  if(consultaBar){ drawer.insertBefore(consultaBar, cuerpo); }
+  const consultaPanel = document.getElementById('consultaPanel');
+  if(consultaPanel) document.body.appendChild(consultaPanel);
+  const btnPreg = document.getElementById('btnConsultaPreguntar'), inpPreg = document.getElementById('consultaInput');
+  if(btnPreg) btnPreg.addEventListener('click', ()=>cerrar());
+  if(inpPreg){
+    inpPreg.placeholder = 'Pregunta lo que sea: deuda de A2-3, quién no ha pagado…';
+    inpPreg.addEventListener('keydown', e=>{ if(e.key === 'Enter') cerrar(); });
+  }
 
   const pestanas = ()=>Array.from(document.querySelectorAll('#sidebarTabs .stab[data-tab]'))
     .filter(t=>t.style.display !== 'none')
@@ -12556,6 +12690,8 @@ checkMobile();
     {k: 'config', icono: '⚙️', nombre: 'Configuración', subs: ['@config', 'usuarios', 'auditoria']}
   ];
   const grupoDeSub = k=>NAV_GRUPOS.find(g=>g.subs.includes(k));
+  // los botones de respaldo se guardan aquí: al redibujar el menú se vuelven a poner (antes se perdían)
+  const barrasRespaldo = ['localBackupBar', 'importBackupBar'].map(id=>document.getElementById(id)).filter(Boolean);
   const grupoActual = ()=>currentTab === 'config' ? 'config' : currentTab === 'cuentas' ? (grupoDeSub(adminSub) || {}).k : null;
   let abiertos = new Set();
   function pintarMenu(){
@@ -12602,7 +12738,7 @@ checkMobile();
     cuerpo.innerHTML = h;
     // los botones de respaldo conservan sus eventos: se mudan al cajon
     const subResp = cuerpo.querySelector('#navRespaldoSub');
-    ['localBackupBar', 'importBackupBar'].forEach(id=>{ const el = document.getElementById(id); if(el) subResp.appendChild(el); });
+    barrasRespaldo.forEach(el=>subResp.appendChild(el));
     if(!subResp.querySelector('.chipbar:not([style*="display: none"])')) cuerpo.querySelector('#navRespaldo').style.display = 'none';
     cuerpo.querySelectorAll('[data-nav-tab]').forEach(b=>{ b.onclick = ()=>{ currentTab = b.dataset.navTab; cerrar(); renderSidebar(); irArriba(); }; });
     cuerpo.querySelectorAll('[data-nav-grupo]').forEach(b=>{ b.onclick = ()=>{
@@ -12650,6 +12786,7 @@ checkMobile();
   const renderOriginal = renderSidebar;
   renderSidebar = function(){ renderOriginal.apply(this, arguments); pintarTitulo(); };
   pintarTitulo();
+  setTimeout(()=>{ try{ pintarMenu(); }catch(e){} }, 0);
 
   // edificio: miniatura (clic = media pantalla), media pantalla, u oculto
   const cubierta = document.createElement('div');
