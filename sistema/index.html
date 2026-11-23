@@ -4111,6 +4111,9 @@ function conceptosPagoQuincena(lin, q){
 }
 
 // conceptos pagados de un egreso de nómina (tabla egreso_conceptos, sql/33)
+let partesCache = [];         // partes de los pagos múltiples (sql/44): {egreso_id, gasto_id, monto, gastos:{...}}
+let pagadoPartes = {};        // gasto_id -> lo pagado en pagos múltiples
+let pagoMultiple = null;      // claves marcadas en "Pagar varias juntas" (null = modo apagado)
 let egresoConceptosCache = {};   // egreso_id -> [{concepto, monto_usd}]
 const conceptosDeEgreso = id=>egresoConceptosCache[id] || [];
 
@@ -4893,8 +4896,15 @@ async function cargarEgresos(){
     const conTasa = egresosCache.find(e=>e.tasa_bcv);
     tasaDia = conTasa ? Number(conTasa.tasa_bcv) : (nominaMes && Number(nominaMes.tasa_bcv)) || null;
   }
+  partesCache = []; pagadoPartes = {};
+  const pa = await db.from('egreso_partes').select('egreso_id, gasto_id, monto, gastos(descripcion, documento, proveedor)').limit(5000);
+  if(!pa.error){
+    partesCache = pa.data || [];
+    partesCache.forEach(x=>{ pagadoPartes[x.gasto_id] = (pagadoPartes[x.gasto_id] || 0) + Number(x.monto); });
+  }
   const pagadoDe = (campo, id, tipo)=>egresosCache
-    .filter(e=>e[campo]===id && (!tipo || e.tipo===tipo)).reduce((s,e)=>s+Number(e.monto_usd), 0);
+    .filter(e=>e[campo]===id && (!tipo || e.tipo===tipo)).reduce((s,e)=>s+Number(e.monto_usd), 0)
+    + (campo === 'gasto_id' && !tipo ? (pagadoPartes[id] || 0) : 0);
   const [gs, noms, cob] = await Promise.all([
     db.from('gastos').select('id, periodo_id, descripcion, proveedor, monto, origen').neq('origen', 'nomina').gt('monto', 0).order('periodo_id').limit(2000),
     db.from('nominas').select('id, periodo_id, estado'),
@@ -4990,8 +5000,78 @@ function esMesExterno(periodoId){
   const per = periodosCache.find(x=>x.id === periodoId);
   return !!(per && per.externo);
 }
+// pago múltiple: solo gastos y facturas (la nómina va por trabajador y concepto)
+const esMultiPagable = p=>p.tipo === 'gasto' || p.tipo === 'factura';
+function pintarPagoMultiple(sec){
+  const host = sec.querySelector('#pmPanel');
+  if(!host) return;
+  const fmtB = n=>(Number(n)||0).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const elegidos = porPagar.filter(p=>pagoMultiple.has(p.clave));
+  const previos = {};
+  host.querySelectorAll('[data-pm-monto]').forEach(i=>{ previos[i.dataset.pmMonto] = i.value; });
+  const campo = id=>{ const el = host.querySelector('#' + id); return el ? el.value : ''; };
+  const prev = {f: campo('pmFecha'), t: campo('pmTasa'), fo: campo('pmForma'), r: campo('pmRef'), n: campo('pmNota')};
+  host.innerHTML = '<div style="border:2px solid #7b4fb0;border-radius:10px;padding:8px 12px;margin:0 0 10px;background:var(--panel);">'
+    + '<div class="assumption" style="margin:0 0 6px;">Marca abajo las deudas que cubre <b>este único pago</b>. Puedes cambiar el monto de cada una para abonar una parte. Queda un solo pago (un n.º de control) para conciliar con un solo movimiento del banco. La nómina no entra aquí.</div>'
+    + (elegidos.length
+        ? elegidos.map(p=>'<div class="comp-item" style="align-items:center;"><span class="t">' + esc(p.concepto) + ' <span style="color:var(--sub);">(debe ' + fmtMoney(p.pendiente) + ')</span></span>'
+            + '<input type="number" step="0.01" min="0" data-pm-monto="' + p.clave + '" value="' + (previos[p.clave] !== undefined ? previos[p.clave] : p.pendiente) + '" style="width:100px;text-align:right;"></div>').join('')
+        : '<div class="empty">Todavía no marcaste ninguna deuda.</div>')
+    + '<div class="presuControl"><span>Total del pago (' + elegidos.length + ' deuda' + (elegidos.length === 1 ? '' : 's') + ')</span><b id="pmTotal">$0</b></div>'
+    + '<div class="form-row"><label>Fecha del pago</label><input type="date" id="pmFecha" value="' + (prev.f || new Date().toISOString().slice(0,10)) + '"></div>'
+    + '<div class="form-row"><label>Tasa BCV (Bs por $)</label><input type="number" step="0.0001" id="pmTasa" value="' + (prev.t || tasaDia || '') + '"></div>'
+    + '<div class="form-row"><label>Equivale a</label><input type="text" id="pmBs" readonly></div>'
+    + '<div class="form-row"><label>Forma</label><select id="pmForma">' + ['Transferencia','Pago móvil','Efectivo','Zelle','Otro'].map(f=>'<option' + (f === prev.fo ? ' selected' : '') + '>' + f + '</option>').join('') + '</select></div>'
+    + '<div class="form-row"><label>Referencia</label><input type="text" id="pmRef" placeholder="N.º de la operación" value="' + escHtml(prev.r || '') + '"></div>'
+    + '<div class="form-row"><label>Nota</label><input type="text" id="pmNota" placeholder="Opcional" value="' + escHtml(prev.n || '') + '"></div>'
+    + '<button class="chip" id="pmConfirmar" style="background:#7b4fb0;color:#fff;width:100%;padding:10px;margin-top:8px;">💸 Registrar el pago múltiple</button></div>';
+  const montos = ()=>elegidos.map(p=>({p, m: Math.round((parseFloat(host.querySelector('[data-pm-monto="' + p.clave + '"]').value) || 0) * 100) / 100}));
+  const recalc = ()=>{
+    const total = montos().reduce((s, x)=>s + x.m, 0);
+    host.querySelector('#pmTotal').textContent = fmtMoney(Math.round(total * 100) / 100);
+    const t = parseFloat(host.querySelector('#pmTasa').value) || 0;
+    host.querySelector('#pmBs').value = t && total ? 'Bs ' + fmtB(total * t) : '';
+  };
+  host.querySelectorAll('[data-pm-monto]').forEach(i=>{ i.oninput = recalc; });
+  host.querySelector('#pmTasa').oninput = recalc;
+  host.querySelector('#pmFecha').onchange = async ()=>{
+    const t = await tasaDelDia(host.querySelector('#pmFecha').value);
+    if(t){ host.querySelector('#pmTasa').value = t.tasa; recalc(); }
+  };
+  if(!prev.t) host.querySelector('#pmFecha').onchange();
+  recalc();
+  host.querySelector('#pmConfirmar').onclick = async ()=>{
+    const ms = montos();
+    if(ms.length < 2){ alert('Marca al menos dos deudas. Para una sola, usa su botón 💸 Pagar.'); return; }
+    const malo = ms.find(x=>!(x.m > 0) || x.m > x.p.pendiente + 0.005);
+    if(malo){ alert('Revisa el monto de: ' + malo.p.concepto + '\nDebe ser mayor que cero y no pasar de ' + fmtMoney(malo.p.pendiente) + '.'); return; }
+    const forma = host.querySelector('#pmForma').value, ref = host.querySelector('#pmRef').value.trim();
+    if(forma !== 'Efectivo' && !ref){ alert('Falta la referencia de la transferencia.'); return; }
+    const total = Math.round(ms.reduce((s, x)=>s + x.m, 0) * 100) / 100;
+    if(!confirm('Registrar UN pago de ' + fmtMoney(total) + ' que cubre ' + ms.length + ' deudas?')) return;
+    const btn = host.querySelector('#pmConfirmar');
+    btn.disabled = true; btn.textContent = 'Registrando…';
+    const tasa = parseFloat(host.querySelector('#pmTasa').value) || null;
+    const r = await db.rpc('pagar_lote', {
+      p_items: ms.map(x=>({tipo: x.p.tipo, id: x.p.tipo === 'factura' ? x.p.factura_id : x.p.gasto_id, monto: x.m})),
+      p_fecha: host.querySelector('#pmFecha').value || null, p_tasa: tasa, p_forma: forma,
+      p_referencia: ref || null, p_nota: host.querySelector('#pmNota').value.trim() || null});
+    if(r.error){
+      btn.disabled = false; btn.textContent = '💸 Registrar el pago múltiple';
+      alert('No se pudo registrar el pago: ' + r.error.message + (/pagar_lote/.test(r.error.message) ? '\n\nFalta ejecutar sql/44_pago_multiple.sql en Supabase.' : ''));
+      return;
+    }
+    if(tasa) tasaDia = tasa;
+    pagoMultiple = null;
+    await refrescarCuentas();
+  };
+  sec.querySelectorAll('[data-multi]').forEach(c=>{ c.onchange = ()=>{
+    c.checked ? pagoMultiple.add(c.dataset.multi) : pagoMultiple.delete(c.dataset.multi);
+    pintarPagoMultiple(sec);
+  }; });
+}
 function pagadoDeGasto(gastoId){
-  return egresosCache.filter(e=>e.gasto_id===gastoId).reduce((s,e)=>s+Number(e.monto_usd), 0);
+  return egresosCache.filter(e=>e.gasto_id===gastoId).reduce((s,e)=>s+Number(e.monto_usd), 0) + (pagadoPartes[gastoId] || 0);
 }
 
 // presupuesto anual que cubre el mes elegido (o el de hoy), con los gastos de todo su año
@@ -5661,15 +5741,22 @@ function renderEgresosSeccion(body){
           + '<div id="cnAviso" class="assumption" style="margin:0 0 6px;">Cada concepto va en su propia transferencia: adjunta el estado de cuenta (Excel, CSV; uno o varios archivos) y se registran todas de una vez, ya conciliadas.</div>'
         : '')
     + '<div id="cnPanel"></div>'
+    + (puedeDinero() && porPagar.filter(esMultiPagable).length >= 2
+        ? '<button class="chip" id="pmModo" style="width:100%;padding:9px;margin:6px 0;' + (pagoMultiple ? 'background:var(--panel2);color:var(--sub);border:1px solid var(--border);' : 'background:#7b4fb0;color:#fff;') + '">'
+          + (pagoMultiple ? '✕ Cancelar el pago múltiple' : '☑️ Pagar varias juntas (una sola transferencia o pago)') + '</button>'
+          + (pagoMultiple ? '<div id="pmPanel"></div>' : '')
+        : '')
     + (porPagar.length
-        ? porPagar.map(p=>'<div class="comp-item"><span class="t">' + esc(p.periodo) + ' · ' + esc(p.concepto)
+        ? porPagar.map(p=>'<div class="comp-item"' + (pagoMultiple && !esMultiPagable(p) ? ' style="opacity:.5;"' : '') + '><span class="t">'
+            + (pagoMultiple && esMultiPagable(p) ? '<input type="checkbox" data-multi="' + p.clave + '"' + (pagoMultiple.has(p.clave) ? ' checked' : '') + ' style="width:auto;margin-right:6px;">' : '')
+            + esc(p.periodo) + ' · ' + esc(p.concepto)
             + (p.pendiente < p.monto - 0.005 ? ' <span style="color:var(--sub);">(abonado ' + fmtMoney(p.monto - p.pendiente) + ' de ' + fmtMoney(p.monto) + ')</span>' : '')
             + '</span><span style="display:flex;align-items:center;gap:8px;"><b>' + fmtMoney(p.pendiente) + '</b>'
             + (p.tipo === 'factura' ? ' ' + (p.fac.comprobante_url
                   ? '<span style="color:var(--green);" title="' + escHtml((p.fac.documento ? 'Factura ' + p.fac.documento + ' · ' : '') + 'con archivo: tócalo en 🧾 para verlo') + '">🧾📎</span>'
                   : '<span style="color:var(--amber);font-weight:700;" title="Adjunta la foto o el PDF con el botón 🧾">⚠️ falta factura o recibo</span>')
                 + ' <button class="accionBtn" data-soporte-factura="' + p.factura_id + '" title="Factura, proveedor y archivo de soporte">🧾</button>' : '')
-            + (egresoAbierto===p.clave ? '' : '<button class="chip" data-pagar="' + p.clave + '" style="background:#d35400;color:#fff;">💸 Pagar</button>')
+            + (egresoAbierto===p.clave || pagoMultiple ? '' : '<button class="chip" data-pagar="' + p.clave + '" style="background:#d35400;color:#fff;">💸 Pagar</button>')
             + '</span></div>' + (p.tipo === 'factura' ? '<div data-soporte-fhost="' + p.factura_id + '"></div>' : '')
             + (egresoAbierto===p.clave ? formPago(p) : '')).join('')
         : '<div class="empty">No hay nada pendiente por pagar.</div>')
@@ -5677,6 +5764,7 @@ function renderEgresosSeccion(body){
     + (delMes.length
         ? delMes.map(e=>'<div class="comp-item"><span class="t">' + nControl(e) + esc(e.fecha) + ' · ' + esc(e.concepto)
             + ' <span style="color:var(--sub);">' + esc(e.forma_pago||'') + (e.referencia ? ' #' + esc(e.referencia) : '') + '</span>'
+            + (e.tipo === 'lote' ? '<br><span style="color:var(--sub);font-size:11px;">' + partesCache.filter(x=>x.egreso_id === e.id).map(x=>esc((x.gastos || {}).descripcion || 'gasto') + ' ' + fmtMoney(Number(x.monto))).join(' · ') + '</span>' : '')
             + (conceptosDeEgreso(e.id).length ? '<br><span style="color:var(--sub);font-size:11px;">' + conceptosDeEgreso(e.id).map(c=>esc(c.concepto) + ' ' + (Number(c.monto_usd) < 0 ? '−' : '') + fmtMoney(Math.abs(Number(c.monto_usd)))).join(' · ') + '</span>' : '')
             + (e.nota ? '<br><span style="color:var(--sub);font-size:11px;">' + esc(e.nota) + '</span>' : '') + '</span>'
             + '<span>' + fmtMoney(Number(e.monto_usd)) + (e.monto_bs ? ' <span style="color:var(--sub);font-size:11px;">Bs ' + fmt2(e.monto_bs) + '</span>' : '')
@@ -5687,6 +5775,9 @@ function renderEgresosSeccion(body){
       + '<b style="color:' + (cobradoMes + totalOtrosIngresos() - pagadoMesUsd >= 0 ? 'var(--green)' : 'var(--red)') + ';">' + (cobradoMes + totalOtrosIngresos() - pagadoMesUsd >= 0 ? '+' : '−') + fmtMoney(Math.abs(cobradoMes + totalOtrosIngresos() - pagadoMesUsd)) + '</b></div>';
 
   sec.querySelectorAll('[data-pagar]').forEach(b=>{ b.onclick = ()=>{ egresoAbierto = b.dataset.pagar; renderSidebar(); }; });
+  const pmModo = sec.querySelector('#pmModo');
+  if(pmModo) pmModo.onclick = ()=>{ pagoMultiple = pagoMultiple ? null : new Set(); egresoAbierto = null; renderSidebar(); };
+  if(pagoMultiple) pintarPagoMultiple(sec);
   // carga de la nómina desde el estado de cuenta
   const cnArchivo = sec.querySelector('#cnArchivo');
   if(cnArchivo) cnArchivo.onchange = async e=>{
@@ -7851,7 +7942,7 @@ async function xlsCobros(desde, hasta){
   return [['Cobros condominio', cond.concat(totCond)], ['Cobros proyectos', xlsConTotal(proy, 'Fecha')], ['Cobros por forma', porForma]];
 }
 
-const XLS_TIPO_EGRESO = {gasto: 'Pago a proveedor', nomina_q1: 'Nómina 1ra quincena', nomina_q2: 'Nómina 2da quincena',
+const XLS_TIPO_EGRESO = {gasto: 'Pago a proveedor', lote: 'Pago múltiple', nomina_q1: 'Nómina 1ra quincena', nomina_q2: 'Nómina 2da quincena',
   nomina_ley: 'Aportes de ley', otro: 'Otro'};
 async function xlsGastosBase(){
   const [gastos, cats, egresos] = await Promise.all([
@@ -7861,6 +7952,7 @@ async function xlsGastosBase(){
   cats.forEach(c=>{ cat[c.id] = c.nombre; });
   gastos.forEach(g=>{ gasto[g.id] = g; });
   egresos.forEach(e=>{ if(e.gasto_id) pagadoGasto[e.gasto_id] = (pagadoGasto[e.gasto_id] || 0) + Number(e.monto_usd); });
+  (await xlsTraer('egreso_partes', 'gasto_id, monto').catch(()=>[])).forEach(x=>{ pagadoGasto[x.gasto_id] = (pagadoGasto[x.gasto_id] || 0) + Number(x.monto); });
   return {gastos, cat, gasto, egresos, pagadoGasto};
 }
 async function xlsPagosRealizados(desde, hasta){
@@ -8085,6 +8177,10 @@ async function ecCargar(corte){
   // --- por pagar ---
   const pagadoGasto = {};
   egresos.forEach(e=>{ if(e.gasto_id && e.fecha <= corte) pagadoGasto[e.gasto_id] = (pagadoGasto[e.gasto_id] || 0) + Number(e.monto_usd); });
+  const fechaEgreso = {};
+  egresos.forEach(e=>{ fechaEgreso[e.id] = e.fecha; });
+  const partes = await xlsTraer('egreso_partes', 'egreso_id, gasto_id, monto').catch(()=>[]);
+  partes.forEach(x=>{ if((fechaEgreso[x.egreso_id] || '9999') <= corte) pagadoGasto[x.gasto_id] = (pagadoGasto[x.gasto_id] || 0) + Number(x.monto); });
   const pagadoFac = {};
   gastos.forEach(g=>{ if(g.factura_id) pagadoFac[g.factura_id] = (pagadoFac[g.factura_id] || 0) + (pagadoGasto[g.id] || 0); });
   const nomProv = {};
@@ -8123,7 +8219,7 @@ async function ecCargar(corte){
     x.tramo = ecTramo(x.vence, corte);
     x.dias = x.vence ? Math.max(0, ecDiasEntre(x.vence, corte)) : null;
   }));
-  const d = {corte, aptos, cxc, cxp, recibos, apl, pagosOk, proy, aportes, abonos, facs, gastos, egresos, provs, pagadoGasto, nomProv, claveProv, nombreProv};
+  const d = {corte, aptos, cxc, cxp, recibos, apl, pagosOk, proy, aportes, abonos, facs, gastos, egresos, partes, provs, pagadoGasto, nomProv, claveProv, nombreProv};
   ecCache = {corte, d};
   return d;
 }
@@ -8428,6 +8524,11 @@ async function ecMovProv(clave){
   const gastosProv = d.gastos.filter(g=>g.origen !== 'nomina' && Number(g.monto) > 0 && (g.factura_id ? enFactura.has(g.factura_id) : d.claveProv(g) === clave));
   gastosProv.filter(g=>!g.factura_id && g.fecha <= d.corte).forEach(g=>movs.push({fecha: g.fecha, doc: g.numero_control || '', concepto: (g.documento ? g.documento + ' · ' : '') + g.descripcion, cargo: Number(g.monto), abono: 0}));
   const ids = new Set(gastosProv.map(g=>g.id));
+  // lo abonado a este proveedor dentro de pagos múltiples
+  (d.partes || []).filter(x=>ids.has(x.gasto_id)).forEach(x=>{
+    const e = d.egresos.find(y=>y.id === x.egreso_id);
+    if(e && e.fecha <= d.corte) movs.push({fecha: e.fecha, doc: e.numero_control || '', concepto: 'Pago múltiple ' + [e.forma_pago, e.referencia ? '#' + e.referencia : ''].filter(Boolean).join(' '), cargo: 0, abono: Number(x.monto)});
+  });
   d.egresos.filter(e=>e.gasto_id && ids.has(e.gasto_id) && e.fecha <= d.corte).forEach(e=>movs.push({fecha: e.fecha, doc: e.numero_control || '',
     concepto: 'Pago ' + [e.forma_pago, e.referencia ? '#' + e.referencia : ''].filter(Boolean).join(' ') + ' · ' + (e.concepto || ''), cargo: 0, abono: Number(e.monto_usd)}));
   movs.sort((a, b)=>a.fecha.localeCompare(b.fecha) || b.cargo - a.cargo);
