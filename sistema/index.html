@@ -433,6 +433,35 @@
     body.edif-mini #sidebarBody{padding-bottom:150px;}
     #edifCubierta span{font-size:11px;padding:4px 9px;}
   }
+
+  /* ===== AJUSTE 2026-11-23: más contraste entre fondo y tarjetas, contenido centrado y más compacto ===== */
+  :root{--bg:#e6e0d3; --panel:#fffdf9; --panel2:#f6f1e6; --border:#cbbd9f; --text:#1e1c19; --sub:#574f43;}
+  #sidebar, #sidebar.ancho{background:var(--bg);backdrop-filter:none;}
+  @media (min-width: 821px){
+    #sidebarBody, #sidebar.ancho #sidebarBody{padding:18px 24px 40px;font-size:13.5px;}
+    #sidebarBody > *, #sidebar.ancho #sidebarBody > *{max-width:1040px;margin-left:auto !important;margin-right:auto !important;}
+    #sidebarBody > #listHost{max-width:1280px;}
+    .form-row label, .form-row input, .form-row select{font-size:13.5px;}
+    h3.section{font-size:12.5px;}
+    .comp-item{font-size:12.5px;}
+  }
+  .comp-item{background:var(--panel);border-color:#d8cdb5;box-shadow:0 1px 2px rgba(60,50,30,.07);}
+  .form-row{border-bottom-color:#ddd2bb;}
+  .form-row.two > div input, .form-row.two > div select{background:var(--panel);}
+  .assumption{background:#fbf7ee;border-color:#cbbd9f;color:#4f483d;}
+  .presuControl{background:var(--panel);}
+  .card{background:var(--panel);box-shadow:0 1px 3px rgba(60,50,30,.08);}
+  #sidebarBody .tituloCuenta{border-bottom-width:2px;}
+  /* calculadora flotante */
+  #btnCalc{flex:0 0 auto;width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:var(--panel2);font-size:19px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;}
+  #btnCalc:hover, #btnCalc.activo{border-color:var(--accent);background:rgba(184,134,44,.15);}
+  #calcPop{position:fixed;top:calc(var(--hdr) + 8px);right:16px;z-index:140;width:360px;max-width:calc(100vw - 24px);max-height:calc(100vh - var(--hdr) - 24px);
+    overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:0 14px 40px rgba(60,50,30,.28);padding:10px 14px 14px;display:none;}
+  #calcPop.open{display:block;}
+  #calcPop .calcCab{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:14px;margin-bottom:6px;}
+  #calcPop .tituloCuenta{display:none;}
+  #calcPop > div > div{margin-top:0 !important;}
 </style>
 </head>
 <body>
@@ -12450,6 +12479,25 @@ checkMobile();
   hdr.id = 'hdrSeccion';
   const brand = topbar.querySelector('.brand');
   topbar.insertBefore(hdr, brand ? brand.nextSibling : btnMenu.nextSibling);
+
+  // calculadora a mano: botón 🧮 arriba, se abre flotando sin salir de donde uno está
+  const btnCalc = document.createElement('button');
+  btnCalc.id = 'btnCalc';
+  btnCalc.title = 'Calculadora';
+  btnCalc.textContent = '🧮';
+  topbar.insertBefore(btnCalc, hdr.nextSibling);
+  const calcPop = document.createElement('div');
+  calcPop.id = 'calcPop';
+  document.body.appendChild(calcPop);
+  const cerrarCalc = ()=>{ calcPop.classList.remove('open'); btnCalc.classList.remove('activo'); };
+  btnCalc.onclick = ()=>{
+    if(calcPop.classList.contains('open')){ cerrarCalc(); return; }
+    calcPop.innerHTML = '<div class="calcCab"><span>🧮 Calculadora</span><button class="backbtn" id="calcCerrar">✕</button></div><div id="calcHost"></div>';
+    calcPop.querySelector('#calcCerrar').onclick = cerrarCalc;
+    renderCalculadoraSeccion(calcPop.querySelector('#calcHost'));
+    calcPop.classList.add('open'); btnCalc.classList.add('activo');
+  };
+  document.addEventListener('keydown', e=>{ if(e.key === 'Escape' && calcPop.classList.contains('open') && !calcPop.contains(document.activeElement)) cerrarCalc(); });
 
   // cajon del menu
   const velo = document.createElement('div');
