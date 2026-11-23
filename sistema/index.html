@@ -5763,7 +5763,9 @@ function renderEgresosSeccion(body){
             + (conceptosDeEgreso(e.id).length ? '<br><span style="color:var(--sub);font-size:11px;">' + conceptosDeEgreso(e.id).map(c=>esc(c.concepto) + ' ' + (Number(c.monto_usd) < 0 ? '−' : '') + fmtMoney(Math.abs(Number(c.monto_usd)))).join(' · ') + '</span>' : '')
             + (e.nota ? '<br><span style="color:var(--sub);font-size:11px;">' + esc(e.nota) + '</span>' : '') + '</span>'
             + '<span>' + fmtMoney(Number(e.monto_usd)) + (e.monto_bs ? ' <span style="color:var(--sub);font-size:11px;">Bs ' + fmt2(e.monto_bs) + '</span>' : '')
-            + (puedeEditar() ? ' <button class="accionBtn" data-borrar-egreso="' + e.id + '" title="Anular este pago">✕</button>' : '') + '</span></div>').join('')
+            + ' <button class="accionBtn" data-comprobante="' + e.id + '" title="Comprobante de pago en PDF, por correo o WhatsApp">🧾</button>'
+            + (puedeEditar() ? ' <button class="accionBtn" data-borrar-egreso="' + e.id + '" title="Anular este pago">✕</button>' : '') + '</span></div>'
+            + '<div data-comprobante-host="' + e.id + '"></div>').join('')
         : '<div class="empty">Todavía no hay pagos este mes.</div>')
     + '<div class="presuControl"><span>' + mesLegible(mesActual) + ': cobrado a los vecinos ' + fmtMoney(cobradoMes) + (otrosIngresosMes.length ? ' + otros ingresos ' + fmtMoney(totalOtrosIngresos()) : '') + ' − pagado ' + fmtMoney(pagadoMesUsd)
       + (pagadoMesBs ? ' (Bs ' + fmt2(pagadoMesBs) + ')' : '') + '</span>'
@@ -5918,6 +5920,11 @@ function renderEgresosSeccion(body){
       if(!puedeDinero()) soloLectura(host);
     };
   });
+  sec.querySelectorAll('[data-comprobante]').forEach(b=>{ b.onclick = ()=>{
+    const host = sec.querySelector('[data-comprobante-host="' + b.dataset.comprobante + '"]');
+    if(host.innerHTML){ host.innerHTML = ''; return; }
+    abrirComprobante(b.dataset.comprobante, host);
+  }; });
   sec.querySelectorAll('[data-borrar-egreso]').forEach(b=>{
     b.onclick = async ()=>{
       if(!confirm('¿Anular este pago? El gasto vuelve a quedar por pagar (si era de una factura, el gasto se borra y la factura vuelve a deber).')) return;
@@ -8894,6 +8901,165 @@ function renderCalculadoraSeccion(body){
   buscarTasa();
   previa(); pintarHist();
   setTimeout(()=>expr.focus(), 50);
+}
+
+// =====================================================================
+// 🧾 COMPROBANTE DE PAGO (PDF) con nota de pago para el proveedor, por correo o WhatsApp
+// =====================================================================
+async function comprobanteDatos(egresoId){
+  const { data: e, error } = await db.from('egresos').select('*').eq('id', egresoId).single();
+  if(error) throw new Error(error.message);
+  const items = [];   // lo que cubre el pago: {desc, doc, monto}
+  let provId = null, provNombre = '', empleadoId = e.empleado_id || null;
+  if(e.tipo === 'lote'){
+    const { data: ps } = await db.from('egreso_partes').select('monto, gastos(descripcion, documento, proveedor, proveedor_id)').eq('egreso_id', e.id);
+    (ps || []).forEach(x=>{
+      const g = x.gastos || {};
+      items.push({desc: g.descripcion || 'Gasto', doc: g.documento || '', monto: Number(x.monto)});
+      if(!provId && g.proveedor_id) provId = g.proveedor_id;
+      if(!provNombre && g.proveedor) provNombre = g.proveedor;
+    });
+  } else if(e.gasto_id){
+    const { data: g } = await db.from('gastos').select('descripcion, documento, proveedor, proveedor_id').eq('id', e.gasto_id).maybeSingle();
+    if(g){ items.push({desc: g.descripcion, doc: g.documento || '', monto: Number(e.monto_usd)}); provId = g.proveedor_id; provNombre = g.proveedor || ''; }
+  }
+  if(!items.length) items.push({desc: e.concepto, doc: '', monto: Number(e.monto_usd)});
+  let dest = {nombre: provNombre, rif: '', correo: '', telefono: ''};
+  if(provId){
+    const { data: p } = await db.from('proveedores').select('nombre, rif, correo, telefono').eq('id', provId).maybeSingle();
+    if(p) dest = {nombre: p.nombre || provNombre, rif: p.rif || '', correo: p.correo || '', telefono: p.telefono || '', provId};
+  } else if(empleadoId || e.prestamo_id){
+    const emp = (empleadosCache || []).find(x=>x.id === empleadoId);
+    if(emp) dest = {nombre: emp.nombre, rif: emp.cedula || '', correo: emp.correo || '', telefono: emp.telefono || ''};
+  }
+  return {e, items, dest};
+}
+const compMon = n=>'$' + (Number(n) || 0).toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const compBs = n=>'Bs ' + (Number(n) || 0).toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const compFecha = f=>f ? String(f).slice(0, 10).split('-').reverse().join('/') : '';
+function notaPagoDefecto(c){
+  const e = c.e;
+  return 'Estimado(s) ' + (c.dest.nombre || 'proveedor') + ':\n\n'
+    + 'Por medio de la presente le notificamos que el día ' + compFecha(e.fecha) + ' el Conjunto Residencial Hatillo Hill realizó el pago de '
+    + compMon(e.monto_usd) + (e.monto_bs ? ' (' + compBs(e.monto_bs) + ' a la tasa BCV de ' + Number(e.tasa_bcv).toLocaleString('es-VE') + ')' : '')
+    + ' por ' + (e.forma_pago || 'pago').toLowerCase() + (e.referencia ? ', referencia ' + e.referencia : '') + ', correspondiente a: '
+    + c.items.map(i=>(i.doc ? i.doc + ' · ' : '') + i.desc).join('; ') + '.\n\n'
+    + 'Le agradecemos confirmar la recepción. Adjuntamos el comprobante de pago ' + (e.numero_control || '') + '.\n\n'
+    + 'Atentamente,\nJunta de Condominio · Conjunto Residencial Hatillo Hill';
+}
+async function comprobantePdf(c, nota){
+  await ecCargarPdf();
+  const e = c.e;
+  const doc = new window.jspdf.jsPDF({unit: 'pt', format: 'letter'});
+  const W = doc.internal.pageSize.getWidth();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.text('Conjunto Residencial Hatillo Hill', 40, 46);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110); doc.text('RIF J-407475100 · Junta de Condominio', 40, 60);
+  doc.setTextColor(20); doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.text('COMPROBANTE DE PAGO', W - 40, 46, {align: 'right'});
+  doc.setFontSize(11); doc.text(e.numero_control || '', W - 40, 62, {align: 'right'});
+  doc.setDrawColor(184, 134, 44); doc.setLineWidth(1.2); doc.line(40, 72, W - 40, 72);
+  let y = 94;
+  const fila = (k, v)=>{ doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.text(k, 40, y); doc.setFont('helvetica', 'normal');
+    const t = doc.splitTextToSize(String(v || '—'), W - 200); doc.text(t, 160, y); y += 14 * t.length; };
+  fila('Fecha del pago:', compFecha(e.fecha));
+  fila('Pagado a:', c.dest.nombre || '—');
+  if(c.dest.rif) fila('RIF / C.I.:', c.dest.rif);
+  fila('Forma de pago:', e.forma_pago || '—');
+  if(e.referencia) fila('Referencia:', e.referencia);
+  y += 6;
+  doc.autoTable({startY: y, head: [['Concepto', 'Factura / recibo', 'Monto']],
+    body: c.items.map(i=>[i.desc, i.doc || '', compMon(i.monto)]),
+    foot: [['Total pagado', '', compMon(e.monto_usd)]],
+    theme: 'striped', margin: {left: 40, right: 40}, styles: {fontSize: 9, cellPadding: 4},
+    headStyles: {fillColor: [47, 111, 139]}, footStyles: {fillColor: [230, 230, 230], textColor: 20, fontStyle: 'bold'},
+    columnStyles: {2: {halign: 'right', cellWidth: 90}, 1: {cellWidth: 120}}});
+  y = doc.lastAutoTable.finalY + 14;
+  if(e.monto_bs){ doc.setFontSize(10); doc.text('Equivalente: ' + compBs(e.monto_bs) + ' a la tasa BCV de ' + Number(e.tasa_bcv).toLocaleString('es-VE') + ' Bs/$', 40, y); y += 16; }
+  if(e.nota){ doc.setFontSize(9); doc.setTextColor(90); doc.text(doc.splitTextToSize('Nota: ' + e.nota, W - 80), 40, y); doc.setTextColor(20); y += 16; }
+  y += 8;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('Nota de pago', 40, y); y += 14;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const lineas = doc.splitTextToSize(nota, W - 80);
+  doc.text(lineas, 40, y); y += 13 * lineas.length + 40;
+  if(y > 690) { doc.addPage(); y = 120; }
+  doc.setDrawColor(120); doc.setLineWidth(.6);
+  doc.line(60, y, 250, y); doc.line(W - 250, y, W - 60, y);
+  doc.setFontSize(9); doc.text('Entregado por (Hatillo Hill)', 155, y + 12, {align: 'center'}); doc.text('Recibido por', W - 155, y + 12, {align: 'center'});
+  doc.setFontSize(8); doc.setTextColor(130);
+  doc.text('Emitido el ' + compFecha(new Date().toLocaleDateString('en-CA', {timeZone: 'America/Caracas'})) + ' · HH Control', W / 2, doc.internal.pageSize.getHeight() - 20, {align: 'center'});
+  return doc;
+}
+async function abrirComprobante(egresoId, host){
+  host.innerHTML = '<div class="assumption">Preparando el comprobante…</div>';
+  let c;
+  try{ c = await comprobanteDatos(egresoId); }catch(err){ host.innerHTML = '<div class="assumption" style="color:var(--red);">No se pudo leer el pago: ' + esc(err.message) + '</div>'; return; }
+  const nombreArch = 'comprobante_' + (c.e.numero_control || c.e.id.slice(0, 8)) + '.pdf';
+  host.innerHTML = '<div style="border:2px solid #2f6f8b;border-radius:10px;padding:8px 12px;margin:4px 0 10px;background:var(--panel);">'
+    + '<div style="font-weight:800;margin-bottom:6px;">🧾 Comprobante ' + esc(c.e.numero_control || '') + ' · ' + esc(c.dest.nombre || 'sin proveedor') + '</div>'
+    + '<div class="form-row two"><div><label>Correo del proveedor</label><input type="text" data-c="correo" value="' + escHtml(c.dest.correo) + '" placeholder="correo@proveedor.com"></div>'
+      + '<div><label>WhatsApp del proveedor</label><input type="text" data-c="tel" value="' + escHtml(c.dest.telefono) + '" placeholder="0414-1234567"></div></div>'
+    + (c.dest.provId ? '<label style="font-size:11.5px;display:flex;gap:6px;align-items:center;margin:2px 0 6px;"><input type="checkbox" data-c="guardar" checked style="width:auto;"> Guardar correo y teléfono en la ficha del proveedor</label>' : '')
+    + '<div class="form-row"><label>Nota de pago</label><textarea data-c="nota" style="min-height:150px;font-size:12.5px;">' + escHtml(notaPagoDefecto(c)) + '</textarea></div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:6px;">'
+      + '<button class="btn" data-c="pdf">📄 Descargar PDF</button>'
+      + '<button class="btn" data-c="mail" style="background:#3b78b5;color:#fff;">✉️ Enviar por correo</button>'
+      + '<button class="btn" data-c="wa" style="background:var(--green);color:#fff;">📱 WhatsApp</button>'
+      + '<button class="btn ghost" data-c="cerrar">Cerrar</button></div>'
+    + '<div data-c="msg" style="font-size:12px;margin-top:6px;"></div></div>';
+  const $ = k=>host.querySelector('[data-c="' + k + '"]');
+  const msg = (t, color)=>{ $('msg').innerHTML = t; $('msg').style.color = color || 'var(--sub)'; };
+  const guardarFicha = async ()=>{
+    if(!c.dest.provId || !$('guardar') || !$('guardar').checked) return;
+    const correo = $('correo').value.trim(), telefono = $('tel').value.trim();
+    if(correo === c.dest.correo && telefono === c.dest.telefono) return;
+    const r = await db.from('proveedores').update({correo: correo || null, telefono: telefono || null}).eq('id', c.dest.provId);
+    if(!r.error){ c.dest.correo = correo; c.dest.telefono = telefono; }
+  };
+  const armar = async ()=>comprobantePdf(c, $('nota').value.trim());
+  $('cerrar').onclick = ()=>{ host.innerHTML = ''; };
+  $('pdf').onclick = async ()=>{
+    try{ (await armar()).save(nombreArch); msg('✓ PDF descargado: ' + nombreArch, 'var(--green)'); }catch(err){ msg('No se pudo armar el PDF: ' + esc(err.message), 'var(--red)'); }
+  };
+  $('mail').onclick = async ()=>{
+    const para = $('correo').value.trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(para)){ msg('Escribe un correo válido del proveedor.', 'var(--red)'); return; }
+    $('mail').disabled = true; msg('Enviando…');
+    try{
+      await guardarFicha();
+      const doc = await armar();
+      const b64 = doc.output('datauristring').split(',')[1];
+      const nota = $('nota').value.trim();
+      const { data, error } = await db.functions.invoke('avisos', {body: {correos: [{para,
+        asunto: 'Comprobante de pago ' + (c.e.numero_control || '') + ' · Conjunto Residencial Hatillo Hill',
+        texto: nota, html: '<div style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-line;">' + escHtml(nota) + '</div>',
+        adjuntos: [{nombre: nombreArch, tipo: 'application/pdf', base64: b64}]}]}});
+      if(error) throw new Error(error.message);
+      if(data && data.fallidos && data.fallidos.length) throw new Error(data.fallidos[0].error);
+      if(!data || !data.enviados) throw new Error('No se envió');
+      if(!data.adjuntos) msg('⚠️ El correo salió pero SIN el PDF: falta actualizar la función de correo en Supabase.', 'var(--amber)');
+      else msg('✓ Enviado a ' + esc(para) + ' con el PDF adjunto.', 'var(--green)');
+    }catch(err){
+      msg('No se pudo enviar: ' + esc(err.message) + (/registrado/.test(err.message) ? '<br>Falta actualizar la función de correo en Supabase para que acepte correos de proveedores.' : ''), 'var(--red)');
+    }
+    $('mail').disabled = false;
+  };
+  $('wa').onclick = async ()=>{
+    const num = toWhatsAppNumber($('tel').value.trim());
+    const nota = $('nota').value.trim();
+    try{
+      await guardarFicha();
+      const doc = await armar();
+      const archivo = new File([doc.output('blob')], nombreArch, {type: 'application/pdf'});
+      // donde se puede (celular, Chrome en Windows), se comparte el PDF directo a WhatsApp
+      if(navigator.canShare && navigator.canShare({files: [archivo]})){
+        try{ await navigator.share({files: [archivo], text: nota, title: 'Comprobante de pago'}); msg('✓ Elige WhatsApp y el chat del proveedor en la ventana de compartir.', 'var(--green)'); return; }
+        catch(e){ if(e.name === 'AbortError') return; }
+      }
+      doc.save(nombreArch);
+      if(!num){ msg('El PDF se descargó. Falta el número de WhatsApp del proveedor para abrir el chat.', 'var(--amber)'); return; }
+      abrirWA(num, nota);
+      msg('✓ Se abrió WhatsApp con la nota. El PDF se descargó: arrástralo al chat para enviarlo.', 'var(--green)');
+    }catch(err){ msg('No se pudo preparar: ' + esc(err.message), 'var(--red)'); }
+  };
 }
 
 async function exportarExcel(claves, desde, hasta, archivo){
