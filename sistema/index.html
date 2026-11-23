@@ -3484,24 +3484,19 @@ function renderCajaSeccion(body){
   pintarCaja(cont).catch(e=>{ cont.innerHTML = '<div class="assumption" style="color:var(--red);">No se pudo cargar la caja: ' + esc(e.message) + '</div>'; });
 }
 async function datosCaja(){
+  // la caja es del condominio: los abonos a proyectos (Pozo de Agua) son plata aparte y no entran
   const c = cuentaCaja, desde = c.fecha_saldo || '2000-01-01', ef = '%efectivo%';
-  const [pg, eg, oi, ab, mv] = await Promise.all([
+  const [pg, eg, oi, mv] = await Promise.all([
     db.from('pagos').select('id, numero_control, apartamento_id, fecha, monto, forma_pago, referencia').eq('estado', 'confirmado').ilike('forma_pago', ef).gt('fecha', desde).limit(2000),
     db.from('egresos').select('id, numero_control, fecha, concepto, monto_usd, forma_pago, referencia').ilike('forma_pago', ef).gt('fecha', desde).limit(2000),
     db.from('otros_ingresos').select('id, fecha, concepto, monto_usd, forma, referencia').ilike('forma', ef).gt('fecha', desde).limit(2000),
-    db.from('proyecto_abonos').select('id, fecha, monto, forma_pago, referencia, proyecto_aportes(apartamento_id, proyecto_id)').ilike('forma_pago', ef).gt('fecha', desde).limit(2000),
     db.from('movimientos_banco').select('*').eq('cuenta_id', c.id).limit(2000)
   ]);
-  const mal = [pg, eg, oi, ab, mv].find(r=>r.error);
+  const mal = [pg, eg, oi, mv].find(r=>r.error);
   if(mal) throw new Error(mal.error.message);
   const nombreApt = id=>(apartments.find(a=>a.id === id) || {}).propietario || '';
   const L = [];
   (pg.data || []).forEach(x=>L.push({fecha: x.fecha, ctl: x.numero_control, origen: 'Cobro condominio', desc: x.apartamento_id + ' · ' + nombreApt(x.apartamento_id), monto: Number(x.monto)}));
-  (ab.data || []).forEach(x=>{
-    const a = x.proyecto_aportes || {};
-    const pr = (proyectos || []).find(y=>String(y.id) === String(a.proyecto_id));
-    L.push({fecha: x.fecha, origen: 'Proyecto' + (pr ? ' · ' + pr.nombre : ''), desc: (a.apartamento_id || '') + ' · ' + nombreApt(a.apartamento_id), monto: Number(x.monto)});
-  });
   (oi.data || []).forEach(x=>L.push({fecha: x.fecha, origen: 'Otro ingreso', desc: x.concepto, monto: Number(x.monto_usd)}));
   (eg.data || []).forEach(x=>L.push({fecha: x.fecha, ctl: x.numero_control, origen: 'Pago', desc: x.concepto, monto: -Number(x.monto_usd)}));
   (mv.data || []).forEach(x=>L.push({fecha: x.fecha, origen: Number(x.monto) >= 0 ? 'Entrada suelta' : 'Salida suelta', desc: x.descripcion || '', monto: Number(x.monto), movId: x.id}));
