@@ -793,6 +793,8 @@ function puedePresupuesto(){ return tieneRol('admin','junta'); }
 // datos bancarios del portal y plantillas de avisos
 function puedeAvisosBanco(){ return tieneRol('admin','junta'); }
 function puedeImportar(){ return tieneRol('admin','junta'); }
+// editar y borrar los datos de los empleados (Configuración › Empleados; sql/45)
+function puedeEditarEmpleados(){ return tieneRol('admin','junta'); }
 // roles que cada uno puede dar al crear o cambiar un usuario
 function rolesAsignables(){
   if(tieneRol('admin')) return ['vecino','junta','tesorero','admin'];
@@ -4717,9 +4719,12 @@ function pintarEmpleados(cont){
       });
     };
     const pintar = ()=>{
-      ed.innerHTML = '<div class="form-row two"><div><label>Fecha de ingreso</label><input type="date" id="empIngreso" value="' + (e.fecha_ingreso||'') + '"></div>'
-        + '<div><label>Cargo</label><input type="text" id="empCargo" value="' + esc(e.cargo||'').replace(/"/g,'&quot;') + '"></div></div>'
-        + '<div class="form-row"><label>Teléfono (WhatsApp)</label><input type="text" id="empTel" value="' + esc(e.telefono||'').replace(/"/g,'&quot;') + '" placeholder="0414-1234567"></div>'
+      // los datos personales solo los cambian admin y junta (sql/45); la tesorería los ve
+      const ro = puedeEditarEmpleados() ? '' : ' disabled';
+      ed.innerHTML = '<div class="form-row two"><div><label>Fecha de ingreso</label><input type="date" id="empIngreso" value="' + (e.fecha_ingreso||'') + '"' + ro + '></div>'
+        + '<div><label>Cargo</label><input type="text" id="empCargo" value="' + esc(e.cargo||'') + '"' + ro + '></div></div>'
+        + '<div class="form-row"><label>Teléfono (WhatsApp)</label><input type="text" id="empTel" value="' + esc(e.telefono||'') + '" placeholder="0414-1234567"' + ro + '></div>'
+        + (ro ? '<div class="assumption" style="margin-top:0;">Nombre, cédula, cargo, teléfono y fechas los corrigen el admin o la junta en ⚙️ Configuración › 👷 Empleados.</div>' : '')
         + '<div class="presuScroll"><table class="tablaPresu"><thead><tr><th>Concepto</th><th>Tipo</th><th>$ mes o día</th><th>Por día</th><th>Días</th><th title="Se pierde si falta">Condic.</th><th>Se paga</th><th></th></tr></thead><tbody>'
         + filas.map(filaConcepto).join('') + '</tbody></table></div>'
         + '<div style="display:flex;gap:8px;margin-top:8px;">'
@@ -4735,12 +4740,14 @@ function pintarEmpleados(cont){
         leer();
         if(filas.some(f=>!f.nombre)){ alert('Cada concepto necesita un nombre.'); return; }
         try{
-          const { error: ee } = await db.from('empleados').update({
-            fecha_ingreso: document.getElementById('empIngreso').value || null,
-            cargo: document.getElementById('empCargo').value.trim() || null,
-            telefono: document.getElementById('empTel').value.trim() || null
-          }).eq('id', e.id);
-          if(ee) throw ee;
+          if(puedeEditarEmpleados()){
+            const { error: ee } = await db.from('empleados').update({
+              fecha_ingreso: document.getElementById('empIngreso').value || null,
+              cargo: document.getElementById('empCargo').value.trim() || null,
+              telefono: document.getElementById('empTel').value.trim() || null
+            }).eq('id', e.id);
+            if(ee) throw ee;
+          }
           const vivos = filas.filter(f=>f.id).map(f=>f.id);
           const borrar = conceptosEmpleado.filter(c=>c.empleado_id===e.id && !vivos.includes(c.id)).map(c=>c.id);
           if(borrar.length){ const { error } = await db.from('empleado_conceptos').delete().in('id', borrar); if(error) throw error; }
@@ -6140,6 +6147,102 @@ function audDetalle(r){
   return tabla(['Campo', r.accion === 'DELETE' ? 'Lo que se borró' : 'Lo que se creó'], filas);
 }
 
+// ---------- Configuración › Empleados: datos personales, solo admin y junta (sql/45) ----------
+// La nómina (conceptos, líneas, pagos) sigue en Administración › Nómina con la tesorería.
+// Aquí se corrigen nombre, cédula, cargo, teléfono, fechas y cuenta, y se borra un empleado.
+// Si ya tiene nóminas, préstamos o pagos, la base no deja borrarlo: se ofrece darlo de baja.
+let empCfgAbierto = null;
+function renderEmpleadosConfigSeccion(body){
+  const sec = document.createElement('div');
+  sec.style.marginTop = '4px';
+  sec.innerHTML = '<h3 class="section tituloCuenta" style="--c:#6a5acd;"><span class="tcIcono">👷</span>Datos de los empleados</h3>'
+    + '<div class="assumption" style="margin-top:0;">Solo el admin y la junta editan o borran los datos de un trabajador. '
+    + 'Los sueldos, bonos y la nómina del mes se manejan en Administración › Nómina. '
+    + 'Un empleado que ya cobró nóminas o tiene préstamos no se puede borrar (se perdería el historial): se da de baja y sale de las próximas nóminas.</div>'
+    + '<div id="empCfgLista"><div class="assumption">Cargando…</div></div>';
+  body.appendChild(sec);
+  const lista = sec.querySelector('#empCfgLista');
+  if(!puedeEditarEmpleados()){ lista.innerHTML = '<div class="empty">Esta sección es solo para el admin y la junta.</div>'; return; }
+
+  db.from('empleados').select('*').order('activo', {ascending:false}).order('nombre').then(({data, error})=>{
+    if(error){ lista.innerHTML = '<div class="empty">No se pudieron leer los empleados: ' + esc(error.message) + '</div>'; return; }
+    const emps = data || [];
+    if(!emps.length){ lista.innerHTML = '<div class="empty">Todavía no hay empleados. Se agregan en Administración › Nómina.</div>'; return; }
+    const campo = (id, etiqueta, valor, tipo, extra)=>'<div><label>' + etiqueta + '</label><input type="' + (tipo || 'text') + '" id="' + id + '" value="' + esc(valor || '') + '"' + (extra || '') + '></div>';
+    lista.innerHTML = emps.map(e=>{
+      const abierto = empCfgAbierto === e.id;
+      return '<div class="comp-item" style="cursor:pointer;' + (e.activo ? '' : 'opacity:.6;') + '" data-emp-cfg="' + e.id + '"><span class="t"><b>' + esc(e.nombre) + '</b>'
+          + (e.cargo ? ' · ' + esc(e.cargo) : '') + (e.cedula ? ' · C.I. ' + esc(e.cedula) : '') + '</span>'
+          + '<span>' + (e.activo ? '<span style="color:var(--green);">Activo</span>' : '<span style="color:var(--amber);">De baja' + (e.fecha_egreso ? ' desde ' + esc(e.fecha_egreso) : '') + '</span>') + ' ✏️</span></div>'
+        + (abierto ? '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:6px 0 12px;background:var(--panel);">'
+            + '<div class="form-row">' + campo('ecNombre', 'Nombre y apellido *', e.nombre) + '</div>'
+            + '<div class="form-row two">' + campo('ecCedula', 'Cédula', e.cedula) + campo('ecCargo', 'Cargo', e.cargo, 'text', ' placeholder="Mantenimiento, limpieza..."') + '</div>'
+            + '<div class="form-row two">' + campo('ecTel', 'Teléfono (WhatsApp)', e.telefono, 'text', ' placeholder="0414-1234567"') + campo('ecCuenta', 'Cuenta bancaria', e.cuenta_banco) + '</div>'
+            + '<div class="form-row two">' + campo('ecIngreso', 'Ingresó el', e.fecha_ingreso, 'date') + campo('ecEgreso', 'Egresó el', e.fecha_egreso, 'date') + '</div>'
+            + '<div class="form-row"><label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="ecActivo"' + (e.activo ? ' checked' : '') + '> Activo (entra en las nóminas que se abran)</label></div>'
+            + '<div style="display:flex;gap:8px;margin-top:8px;">'
+              + '<button class="chip" id="ecGuardar" style="background:#6a5acd;color:#fff;flex:2;padding:10px;">💾 Guardar cambios</button>'
+              + '<button class="chip" id="ecBorrar" style="background:#c1503f;color:#fff;flex:1;padding:10px;">🗑️ Borrar</button></div>'
+          + '</div>' : '');
+    }).join('');
+
+    lista.querySelectorAll('[data-emp-cfg]').forEach(d=>{
+      d.onclick = ()=>{ empCfgAbierto = empCfgAbierto === d.dataset.empCfg ? null : d.dataset.empCfg; renderSidebar(); };
+    });
+    const e = emps.find(x=>x.id === empCfgAbierto);
+    if(!e) return;
+    const $ = id=>sec.querySelector('#' + id);
+    const despues = async ()=>{ await refrescarCuentas(); };
+
+    $('ecGuardar').onclick = async ev=>{
+      const nombre = $('ecNombre').value.trim();
+      if(!nombre){ alert('El nombre no puede quedar vacío.'); return; }
+      const activo = $('ecActivo').checked;
+      let egreso = $('ecEgreso').value || null;
+      if(!activo && e.activo && !egreso) egreso = new Date().toLocaleDateString('en-CA', {timeZone:'America/Caracas'});
+      ev.target.disabled = true;
+      const { error } = await db.from('empleados').update({
+        nombre: nombre,
+        cedula: $('ecCedula').value.trim() || null,
+        cargo: $('ecCargo').value.trim() || null,
+        telefono: $('ecTel').value.trim() || null,
+        cuenta_banco: $('ecCuenta').value.trim() || null,
+        fecha_ingreso: $('ecIngreso').value || null,
+        fecha_egreso: egreso,
+        activo: activo
+      }).eq('id', e.id);
+      ev.target.disabled = false;
+      if(error){ alert('No se pudo guardar: ' + error.message); return; }
+      empCfgAbierto = null;
+      await despues();
+    };
+
+    $('ecBorrar').onclick = async ev=>{
+      if(nominaMes && nominaMes.estado !== 'cerrada' && (nominaLineas || []).some(l=>l.empleado_id === e.id)){
+        alert(e.nombre + ' está en la nómina abierta de este mes. Quita primero sus líneas o cierra la nómina; después lo podrás dar de baja.');
+        return;
+      }
+      if(!confirm('¿Borrar a ' + e.nombre + '?\n\nSe borran también sus conceptos fijos (sueldo, bonos). Esto no se puede deshacer, pero queda en la Auditoría.')) return;
+      ev.target.disabled = true;
+      const { error } = await db.from('empleados').delete().eq('id', e.id);
+      if(error && (error.code === '23503' || /foreign key|violates/i.test(error.message || ''))){
+        ev.target.disabled = false;
+        if(!e.activo){ alert(e.nombre + ' tiene nóminas, préstamos o pagos registrados y no se puede borrar. Ya está de baja.'); return; }
+        if(!confirm(e.nombre + ' tiene nóminas, préstamos o pagos registrados y no se puede borrar sin perder ese historial.\n\n¿Darlo de baja? Sale de las próximas nóminas y su historial se conserva.')) return;
+        const hoy = new Date().toLocaleDateString('en-CA', {timeZone:'America/Caracas'});
+        const r = await db.from('empleados').update({activo: false, fecha_egreso: e.fecha_egreso || hoy}).eq('id', e.id);
+        if(r.error){ alert('No se pudo dar de baja: ' + r.error.message); return; }
+      } else if(error){
+        ev.target.disabled = false;
+        alert('No se pudo borrar: ' + error.message);
+        return;
+      }
+      empCfgAbierto = null;
+      await despues();
+    };
+  });
+}
+
 function renderAuditoriaSeccion(body){
   if(!audFiltro){
     const hoy = new Date();
@@ -6378,7 +6481,8 @@ const SUBMENU_ADMIN = [
   ['notas',       '📝 Notas',       '#8a7a3b', 'Notas de la junta'],
   ['calculadora', '🧮 Calculadora', '#5a6b7b', 'Calculadora'],
   ['auditoria',   '🕵️ Auditoría',   '#4a4a6a', 'Auditoría'],
-  ['estados',     '📑 Estados de cuenta', '#1f6f8b', 'Estados de cuenta'],
+  ['empleados',   '👷 Empleados',   '#6a5acd', 'Datos de los empleados'],
+  ['estados',    '📑 Estados de cuenta', '#1f6f8b', 'Estados de cuenta'],
   ['exportar',    '📥 Exportar',    '#2e7d4f', 'Exportar a Excel'],
   ['usuarios',    '🔐 Usuarios',    '#5b6472', 'Usuarios del sistema']
 ];
@@ -6400,6 +6504,7 @@ function renderCuentasTab(body){
   if(adminSub === 'usuarios' && !verUsuarios) adminSub = 'gastos';
   const verAuditoria = tieneRol('admin', 'junta');
   if(adminSub === 'auditoria' && !verAuditoria) adminSub = 'gastos';
+  if(adminSub === 'empleados' && !puedeEditarEmpleados()) adminSub = 'gastos';
   const bloqueReportados = renderReportadosSeccion(body);
   renderAvisosSeccion(body);
   renderExportarSeccion(body);
@@ -6410,6 +6515,7 @@ function renderCuentasTab(body){
   if(adminSub === 'notas') renderNotasSeccion(body);
   if(adminSub === 'cobranza') renderCobranzaSeccion(body);
   if(adminSub === 'auditoria') renderAuditoriaSeccion(body);
+  if(adminSub === 'empleados') renderEmpleadosConfigSeccion(body);
   if(adminSub === 'estados') renderEstadosSeccion(body);
   if(adminSub === 'calculadora') renderCalculadoraSeccion(body);
   if(verUsuarios) renderUsuariosSeccion(body);
@@ -12942,14 +13048,14 @@ checkMobile();
     let verU = false, verA = false;
     try{ verU = rolesAsignables().length > 0; }catch(e){}
     try{ verA = tieneRol('admin', 'junta'); }catch(e){}
-    return SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verU) && (k !== 'auditoria' || verA));
+    return SUBMENU_ADMIN.filter(([k])=>(k !== 'usuarios' || verU) && (k !== 'auditoria' || verA) && (k !== 'empleados' || verA));
   }
   // grupos del menú: cada uno se despliega solo cuando se toca
   const NAV_GRUPOS = [
     {k: 'admin', icono: '💰', nombre: 'Administración', subs: ['gastos', 'nomina', 'recibos', 'cobros', 'pagos', 'proveedores', 'inventario', 'avisos', 'cobranza', 'exportar']},
     {k: 'finanzas', icono: '📊', nombre: 'Finanzas', subs: ['estados', 'presupuesto', 'banco']},
     {k: 'herramientas', icono: '🧰', nombre: 'Herramientas', subs: ['notas', 'calculadora']},
-    {k: 'config', icono: '⚙️', nombre: 'Configuración', subs: ['@config', 'usuarios', 'auditoria']}
+    {k: 'config', icono: '⚙️', nombre: 'Configuración', subs: ['@config', 'usuarios', 'empleados', 'auditoria']}
   ];
   const grupoDeSub = k=>NAV_GRUPOS.find(g=>g.subs.includes(k));
   // los botones de respaldo se guardan aquí: al redibujar el menú se vuelven a poner (antes se perdían)
