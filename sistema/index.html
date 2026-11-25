@@ -3223,6 +3223,7 @@ let bancoVista = 'cuenta';
 try{ bancoVista = localStorage.getItem('hh_banco_vista') || 'cuenta'; }catch(e){}
 
 async function cargarBanco(){
+  cargarPatronesComision().catch(()=>{});
   const [ctas, sal] = await Promise.all([
     db.from('cuentas_banco').select('*').eq('activa', true).order('nombre'),
     db.from('v_saldo_cuentas').select('*')
@@ -3371,24 +3372,102 @@ async function leerEstadosCuenta(files){
   return {movs, cuentaArchivo};
 }
 
+// ---------- Comisiones del banco (parametro configuracion.patrones_comision) ----------
+// Una salida cuyo texto del banco contiene alguno de estos textos es una comision:
+// se registra sola como gasto bancario del mes (una sola linea por mes, que va
+// creciendo) con su pago, y queda conciliada. Sin tildes ni mayusculas.
+const PATRONES_COMISION_DEFECTO = ['Comision x cred', 'Comision Credito Inmediato'];
+let patronesComision = PATRONES_COMISION_DEFECTO.slice();
+const sinTildes = s=>String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+async function cargarPatronesComision(){
+  const { data } = await db.from('configuracion').select('valor').eq('clave', 'patrones_comision').maybeSingle();
+  if(data && data.valor != null) patronesComision = String(data.valor).split(/\n|,/).map(x=>x.trim()).filter(Boolean);
+}
+const esComision = m=>Number(m.monto) < 0 && !m.conciliado
+  && patronesComision.some(p=>sinTildes((m.descripcion || '') + ' ' + (m.operacion || '')).includes(sinTildes(p)));
+
+// Registra las comisiones como gasto 'bancarios' del mes y las concilia. Devuelve cuantas.
+async function registrarComisiones(movs){
+  const c = cuentaDe(cuentaActual);
+  const enBs = c.moneda === 'VES';
+  const nombreBanco = c.banco || c.nombre || 'Banco';
+  const grupos = {};
+  for(const m of movs){
+    const per = periodoParaIngreso(m.fecha);
+    if(!per) continue;
+    let tasa = null;
+    if(enBs){ const t = await tasaDelDia(m.fecha); if(!t) continue; tasa = t.tasa; }
+    (grupos[per] = grupos[per] || []).push({m, tasa});
+  }
+  let n = 0;
+  for(const [per, items] of Object.entries(grupos)){
+    const bs = redondear2(items.reduce((s, x)=>s + Math.abs(Number(x.m.monto)), 0));
+    const usd = redondear2(items.reduce((s, x)=>s + Math.abs(Number(x.m.monto)) / (enBs ? x.tasa : 1), 0));
+    if(!(usd > 0)) continue;
+    const fechas = items.map(x=>x.m.fecha).sort();
+    const desc = 'Comisiones bancarias ' + nombreBanco;
+    // una linea por mes: si ya existe, se le suma
+    const { data: ya } = await db.from('gastos').select('id, monto').eq('periodo_id', per)
+      .eq('categoria_id', 'bancarios').eq('descripcion', desc).limit(1);
+    let gastoId, montoAntes = null;
+    if(ya && ya.length){
+      gastoId = ya[0].id; montoAntes = Number(ya[0].monto);
+      const { error } = await db.from('gastos').update({monto: redondear2(montoAntes + usd)}).eq('id', gastoId);
+      if(error){ alert('No se pudieron registrar las comisiones: ' + error.message); continue; }
+    } else {
+      const { data: g, error } = await db.from('gastos').insert({
+        periodo_id: per, fecha: fechas[fechas.length - 1], categoria_id: 'bancarios', descripcion: desc,
+        proveedor: nombreBanco, monto: usd, forma_pago: 'Cargo bancario', prorrateable: true, registrado_por: miPerfil.id
+      }).select('id').single();
+      if(error){ alert('No se pudieron registrar las comisiones: ' + error.message); continue; }
+      gastoId = g.id;
+    }
+    const { data: eg, error: errE } = await db.from('egresos').insert({
+      fecha: fechas[fechas.length - 1],
+      concepto: 'Comisiones ' + nombreBanco + ' ' + fechaCorta(fechas[0]) + (fechas.length > 1 ? ' al ' + fechaCorta(fechas[fechas.length - 1]) : '') + ' (' + items.length + ')',
+      tipo: 'gasto', gasto_id: gastoId, monto_usd: usd,
+      tasa_bcv: enBs ? Math.round(bs / usd * 10000) / 10000 : null, monto_bs: enBs ? bs : null,
+      forma_pago: 'Cargo bancario'
+    }).select('id').single();
+    if(errE){
+      // deshacer el gasto para no dejarlo sin su pago
+      if(montoAntes == null) await db.from('gastos').delete().eq('id', gastoId);
+      else await db.from('gastos').update({monto: montoAntes}).eq('id', gastoId);
+      alert('No se pudieron registrar las comisiones: ' + errE.message); continue;
+    }
+    const { error: errM, count } = await db.from('movimientos_banco').update({egreso_id: eg.id, conciliado: true, nota: 'Comisión bancaria',
+      conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()}, {count: 'exact'})
+      .in('id', items.map(x=>x.m.id)).eq('conciliado', false);
+    if(errM) alert('Las comisiones quedaron como gasto, pero no se pudieron marcar en el banco: ' + errM.message);
+    else n += count || items.length;
+  }
+  return n;
+}
+
 // Empareja solo lo que es seguro: un ingreso con un cobro confirmado de la misma
 // referencia (y el mismo monto en Bs si se sabe), y una salida con un egreso del
 // mismo monto en Bs hecho en esos dias. Devuelve cuantos concilio.
 async function conciliarAutomatico(){
   const c = cuentaDe(cuentaActual);
-  const pend = movimientosCache.filter(m=>!m.conciliado);
-  if(!pend.length) return 0;
+  await cargarPatronesComision();
+  // primero las comisiones (por su texto), para que no se confundan con un pago del mismo monto
+  const comisiones = movimientosCache.filter(esComision);
+  const nCom = comisiones.length ? await registrarComisiones(comisiones) : 0;
+  const idsCom = new Set(comisiones.map(m=>m.id));
+  const pend = movimientosCache.filter(m=>!m.conciliado && !idsCom.has(m.id));
+  if(!pend.length) return nCom;
   const fechas = pend.map(m=>m.fecha).sort();
   const desde = new Date(new Date(fechas[0]).getTime() - 20*86400000).toISOString().slice(0,10);
   const hasta = new Date(new Date(fechas[fechas.length-1]).getTime() + 5*86400000).toISOString().slice(0,10);
   const [pg, eg, usados] = await Promise.all([
     db.from('pagos').select('id, apartamento_id, fecha, monto, monto_bs, referencia').eq('estado', 'confirmado').gte('fecha', desde).lte('fecha', hasta).limit(1000),
-    db.from('egresos').select('id, fecha, monto_usd, monto_bs, referencia').gte('fecha', desde).lte('fecha', hasta).limit(1000),
+    db.from('egresos').select('id, concepto, fecha, tipo, gasto_id, monto_usd, monto_bs, tasa_bcv, referencia, nota').gte('fecha', desde).lte('fecha', hasta).limit(1000),
     db.from('movimientos_banco').select('pago_id, egreso_id').or('pago_id.not.is.null,egreso_id.not.is.null').limit(5000)
   ]);
   const pagosUsados = new Set((usados.data || []).map(u=>u.pago_id).filter(Boolean));
   const egresosUsados = new Set((usados.data || []).map(u=>u.egreso_id).filter(Boolean));
-  let n = 0;
+  let n = nCom;
+  const porAjustar = [];
   for(const m of pend){
     const monto = Math.abs(Number(m.monto));
     let campos = null;
@@ -3410,38 +3489,239 @@ async function conciliarAutomatico(){
         }
       }
     } else {
-      const cand = (eg.data || []).filter(e=>!egresosUsados.has(e.id)
-        && (c.moneda === 'VES' ? Math.abs(Number(e.monto_bs) - monto) < 0.01 : Math.abs(Number(e.monto_usd) - monto) < 0.01)
-        && Math.abs(new Date(e.fecha) - new Date(m.fecha)) <= 5*86400000);
-      if(cand.length === 1){ campos = {egreso_id: cand[0].id}; egresosUsados.add(cand[0].id); }
+      // Un pago se registra en $ y sus Bs salen de la tasa, asi que casi nunca dan los
+      // mismos Bs exactos que el banco. Se busca 1) por referencia (10 dias, monto
+      // parecido, 5%) y 2) por monto parecido (0,5% o Bs 1) en 5 dias; en ambos casos
+      // tiene que haber UN solo candidato. La diferencia se ofrece ajustar al final.
+      const libres = (eg.data || []).filter(e=>!egresosUsados.has(e.id));
+      const montoDe = e=>Number(c.moneda === 'VES' ? e.monto_bs : e.monto_usd);
+      const dias = e=>Math.abs(new Date(e.fecha) - new Date(m.fecha)) / 86400000;
+      const cerca = (e, pct)=>e[c.moneda === 'VES' ? 'monto_bs' : 'monto_usd'] != null
+        && Math.abs(montoDe(e) - monto) <= Math.max(c.moneda === 'VES' ? 1 : 0.01, monto * pct);
+      let cand = libres.filter(e=>mismaReferencia(e.referencia, m.referencia) && dias(e) <= 10 && cerca(e, 0.05));
+      if(cand.length !== 1) cand = libres.filter(e=>dias(e) <= 5 && cerca(e, 0.005));
+      if(cand.length === 1){
+        const e = cand[0];
+        campos = {egreso_id: e.id}; egresosUsados.add(e.id);
+        if(Math.abs(montoDe(e) - monto) >= 0.01){
+          campos.nota = 'Banco ' + fmtCuenta(monto, c) + ', registrado ' + fmtCuenta(montoDe(e), c);
+          porAjustar.push({e, nuevo: monto, antes: montoDe(e)});
+        }
+      }
     }
     if(!campos) continue;
     Object.assign(campos, {conciliado: true, conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()});
     const { error } = await db.from('movimientos_banco').update(campos).eq('id', m.id).eq('conciliado', false);
     if(!error) n++;
   }
+  // pagos enlazados cuyo monto no era exacto: ofrecer dejarlos como el banco, todos de una vez
+  if(porAjustar.length){
+    const msg = '¿Quieres ajustar el monto de estos pagos por el del banco?\n\n'
+      + porAjustar.map(x=>'• ' + fechaCorta(x.e.fecha) + ' ' + x.e.concepto + ': ' + fmtCuenta(x.antes, c) + ' → ' + fmtCuenta(x.nuevo, c)).join('\n')
+      + '\n\nYa quedaron conciliados. Si dices que no, quedan con su monto y la diferencia anotada.';
+    if(confirm(msg)){
+      const fallas = [];
+      for(const x of porAjustar){
+        const plan = await planAjuste(x.e, x.nuevo, c);
+        const err = plan.motivo || await aplicarAjuste(x.e, plan, x.antes, c);
+        if(err) fallas.push(x.e.concepto + ': ' + err);
+      }
+      if(fallas.length) alert('No se pudieron ajustar:\n' + fallas.join('\n'));
+    }
+  }
   return n;
 }
 
-// Para conciliar a mano: cobros o egresos que podrian ser este movimiento
+// Para conciliar a mano: cobros o egresos de esos dias (15 antes y 15 despues).
+// Cada uno trae cuanto tiene y cuanto ya esta enlazado con otros movimientos del
+// banco, porque un mismo pago puede salir en varios movimientos (ej. dos
+// recargas de telefono registradas como un solo pago) o con otro monto.
+// exacta = misma referencia, o lo que le falta por enlazar es igual a este movimiento.
 async function sugerenciasPara(mov){
   const c = cuentaDe(cuentaActual);
+  const enBs = c.moneda === 'VES';
   const monto = Math.abs(Number(mov.monto));
-  const desde = new Date(new Date(mov.fecha).getTime() - 10*86400000).toISOString().slice(0,10);
-  const hasta = new Date(new Date(mov.fecha).getTime() + 6*86400000).toISOString().slice(0,10);
-  if(Number(mov.monto) > 0){
-    const { data } = await db.from('pagos').select('id, apartamento_id, fecha, monto, monto_bs, referencia')
-      .eq('estado', 'confirmado').gte('fecha', desde).lte('fecha', hasta).limit(500);
-    return (data||[]).filter(p=>mismaReferencia(p.referencia, mov.referencia)
-        || (c.moneda === 'VES' ? Math.abs(Number(p.monto_bs) - monto) < 1 : Math.abs(Number(p.monto) - monto) < 0.01))
-      .slice(0, 6).map(p=>({tipo:'pago', id:p.id,
-        texto: fechaCorta(p.fecha) + ' · ' + p.apartamento_id + ' · ' + fmtMoney(Number(p.monto)) + (p.monto_bs ? ' · ' + fmtBs(p.monto_bs) : '') + (p.referencia ? ' · ref. ' + p.referencia : '')}));
+  const ingreso = Number(mov.monto) > 0;
+  const campo = ingreso ? 'pago_id' : 'egreso_id';
+  const t0 = new Date(mov.fecha).getTime();
+  const desde = new Date(t0 - 15*86400000).toISOString().slice(0,10);
+  const hasta = new Date(t0 + 15*86400000).toISOString().slice(0,10);
+  const q = ingreso
+    ? db.from('pagos').select('id, apartamento_id, fecha, monto, monto_bs, referencia').eq('estado', 'confirmado')
+    : db.from('egresos').select('id, concepto, fecha, tipo, gasto_id, monto_usd, monto_bs, tasa_bcv, referencia, nota');
+  const { data } = await q.gte('fecha', desde).lte('fecha', hasta).order('fecha', {ascending:false}).limit(500);
+  const regs = data || [];
+  const enlazado = {};
+  for(let i = 0; i < regs.length; i += 100){
+    const ids = regs.slice(i, i + 100).map(r=>r.id);
+    const { data: ms } = await db.from('movimientos_banco').select(campo + ', monto').in(campo, ids);
+    (ms || []).forEach(m=>{ enlazado[m[campo]] = (enlazado[m[campo]] || 0) + Math.abs(Number(m.monto)); });
   }
-  const { data } = await db.from('egresos').select('id, concepto, fecha, monto_usd, monto_bs, referencia')
-    .gte('fecha', desde).lte('fecha', hasta).limit(500);
-  return (data||[]).filter(e=>c.moneda === 'VES' ? Math.abs(Number(e.monto_bs) - monto) < 1 : Math.abs(Number(e.monto_usd) - monto) < 0.01)
-    .slice(0, 6).map(e=>({tipo:'egreso', id:e.id,
-      texto: fechaCorta(e.fecha) + ' · ' + e.concepto + ' · ' + fmtMoney(Number(e.monto_usd)) + (e.monto_bs ? ' · ' + fmtBs(e.monto_bs) : '')}));
+  const tol = enBs ? 1 : 0.01;
+  return regs.map(r=>{
+    const total = enBs ? (r.monto_bs == null ? null : Number(r.monto_bs)) : Number(ingreso ? r.monto : r.monto_usd);
+    const ya = enlazado[r.id] || 0;
+    const falta = total == null ? null : redondear2(total - ya);
+    // un pago en $ pasado a Bs con la tasa casi nunca da los Bs exactos: 0,5% cuenta como igual
+    const exacta = mismaReferencia(r.referencia, mov.referencia)
+      || (falta != null && Math.abs(falta - monto) <= Math.max(tol, monto * 0.005));
+    const texto = fechaCorta(r.fecha) + ' · ' + (ingreso ? r.apartamento_id : r.concepto)
+      + ' · ' + fmtMoney(Number(ingreso ? r.monto : r.monto_usd)) + (r.monto_bs ? ' · ' + fmtBs(r.monto_bs) : '')
+      + (r.referencia ? ' · ref. ' + r.referencia : '');
+    return {tipo: ingreso ? 'pago' : 'egreso', id: r.id, reg: r, texto, exacta, total, ya, falta,
+            dias: Math.abs(new Date(r.fecha).getTime() - t0)};
+  })
+  // lo que ya quedo enlazado completo no se ofrece, salvo que la referencia coincida
+  .filter(s=>s.exacta || !(s.total != null && s.ya > 0 && s.falta < tol))
+  .sort((a, b)=>(b.exacta - a.exacta) || (a.dias - b.dias));
+}
+
+// Deudas del condominio que aun no tienen su pago (egreso): gastos de meses no
+// cerrados con saldo (sin nomina ni los que nacieron de una factura) y facturas por
+// pagar con saldo. Una salida del banco puede ser su pago: se registra desde Banco.
+async function deudasSinPagar(){
+  const abiertos = periodosCache.filter(p=>p.estado !== 'cerrado').map(p=>p.id);
+  const [g, f] = await Promise.all([
+    abiertos.length ? db.from('gastos').select('id, periodo_id, fecha, descripcion, proveedor, monto, origen, factura_id')
+      .in('periodo_id', abiertos).is('factura_id', null).neq('origen', 'nomina').limit(500) : Promise.resolve({data: []}),
+    db.from('v_facturas_por_pagar').select('*')
+      .eq('anulada', false).gt('saldo', 0.009).limit(500)
+  ]);
+  const gastos = g.data || [];
+  const pagado = {};
+  for(let i = 0; i < gastos.length; i += 100){
+    const { data } = await db.from('v_pagado_gasto').select('gasto_id, pagado').in('gasto_id', gastos.slice(i, i + 100).map(x=>x.id));
+    (data || []).forEach(v=>{ pagado[v.gasto_id] = Number(v.pagado); });
+  }
+  const lista = gastos.map(x=>({tipo: 'gasto', id: x.id, reg: x, saldo: redondear2(Number(x.monto) - (pagado[x.id] || 0)),
+      texto: fechaCorta(x.fecha) + ' · ' + x.descripcion + (x.proveedor ? ' · ' + x.proveedor : '') + ' · gasto ' + fmtMoney(Number(x.monto))}))
+    .filter(x=>x.saldo > 0.009)
+    .concat((f.data || []).map(x=>({tipo: 'factura', id: x.id, reg: x, saldo: Number(x.saldo),
+      texto: fechaCorta(x.fecha) + ' · ' + x.descripcion + (x.documento ? ' · ' + x.documento : '') + (x.proveedor ? ' · ' + x.proveedor : '')
+        + ' · factura ' + fmtMoney(Number(x.monto))})));
+  return lista.sort((a, b)=>String(b.reg.fecha).localeCompare(String(a.reg.fecha)));
+}
+
+// Registra el pago de una deuda con los datos de un movimiento del banco y lo concilia.
+async function pagarDeudaConMovimiento(mov, d, c){
+  const enBs = c.moneda === 'VES';
+  const bs = Math.abs(Number(mov.monto));
+  let tasa = null;
+  if(enBs){
+    const t = await tasaDelDia(mov.fecha);
+    tasa = t ? t.tasa : parseFloat(prompt('No encontré la tasa BCV del ' + fechaCorta(mov.fecha) + '. Escríbela:') || '');
+    if(!(tasa > 0)) return false;
+  }
+  const usd = enBs ? redondear2(bs / tasa) : bs;
+  let pagar = usd, tasaPago = tasa, subirGasto = 0;
+  if(usd > d.saldo + 0.01){
+    const dif = redondear2(usd - d.saldo);
+    if(d.tipo === 'gasto' && confirm('El banco trae ' + fmtMoney(usd) + ' y «' + d.reg.descripcion + '» debe ' + fmtMoney(d.saldo)
+        + ' (' + fmtMoney(dif) + ' más, por ejemplo el impuesto).\n\nAceptar: subir el gasto a lo del banco.\nCancelar: pagar solo ' + fmtMoney(d.saldo) + ' (los Bs quedan como el banco).')){
+      subirGasto = dif;
+    } else {
+      pagar = d.saldo;
+      if(enBs) tasaPago = bs / pagar;
+    }
+  }
+  if(!confirm('¿Registrar el pago de:\n' + d.texto + '\n\npor ' + fmtMoney(pagar) + (enBs ? ' (' + fmtBs(bs) + ')' : '')
+      + ' con fecha ' + fechaCorta(mov.fecha) + (mov.referencia ? ' y ref. ' + mov.referencia : '') + ', y conciliarlo con este movimiento?')) return false;
+  let egresoId;
+  if(d.tipo === 'factura'){
+    const r = await db.rpc('pagar_factura', {p_factura: d.id, p_fecha: mov.fecha, p_monto: pagar, p_tasa: enBs ? tasaPago : null,
+      p_forma: 'Transferencia', p_referencia: mov.referencia || null, p_nota: 'Registrado desde el banco'});
+    if(r.error){ alert('No se pudo registrar el pago: ' + r.error.message); return false; }
+    egresoId = r.data;
+  } else {
+    if(subirGasto){
+      const { error } = await db.from('gastos').update({monto: redondear2(Number(d.reg.monto) + subirGasto)}).eq('id', d.id);
+      if(error){ alert('No se pudo ajustar el gasto: ' + error.message); return false; }
+    }
+    const { data, error } = await db.from('egresos').insert({
+      fecha: mov.fecha, concepto: d.reg.descripcion + (d.reg.proveedor ? ' · ' + d.reg.proveedor : ''),
+      tipo: 'gasto', gasto_id: d.id, monto_usd: pagar, tasa_bcv: enBs ? Math.round(tasaPago * 10000) / 10000 : null,
+      monto_bs: enBs ? bs : null, forma_pago: 'Transferencia', referencia: mov.referencia || null,
+      nota: 'Registrado desde el banco' + (subirGasto ? ' · gasto subido ' + fmtMoney(subirGasto) + ' al monto del banco' : '')
+    }).select('id').single();
+    if(error){
+      if(subirGasto) await db.from('gastos').update({monto: d.reg.monto}).eq('id', d.id);
+      alert('No se pudo registrar el pago: ' + error.message); return false;
+    }
+    egresoId = data.id;
+  }
+  const { error } = await db.from('movimientos_banco').update({egreso_id: egresoId, conciliado: true,
+    conciliado_por: miPerfil.id, conciliado_en: new Date().toISOString()}).eq('id', mov.id);
+  if(error){ alert('El pago quedó registrado, pero no se pudo conciliar: ' + error.message + '\nUsa 🔎 Buscar otra vez.'); }
+  await refrescarCuentas();
+  return true;
+}
+
+// Ajustar un pago del condominio (egreso) a lo que dice el banco. Cambia el egreso
+// (Bs y $) y, si es el unico pago de su gasto y lo cubria completo, tambien el gasto,
+// para que no quede pagado de mas o de menos. Nomina y pagos multiples no se tocan.
+// planAjuste devuelve {campos, gasto, tasa} o {motivo} si no se puede.
+async function planAjuste(e, nuevo, c){
+  const enBs = c.moneda === 'VES';
+  if(e.tipo === 'lote' || String(e.tipo).startsWith('nomina'))
+    return {motivo: (e.tipo === 'lote' ? 'es un pago múltiple' : 'es de nómina') + ': corrígelo en Pagos si hace falta'};
+  const tasa = Number(e.tasa_bcv) || (Number(e.monto_bs) && Number(e.monto_usd) ? Number(e.monto_bs) / Number(e.monto_usd) : 0);
+  let campos;
+  if(enBs){
+    if(!tasa) return {motivo: 'no tiene tasa: corrige su monto en Pagos'};
+    campos = {monto_bs: nuevo, monto_usd: redondear2(nuevo / tasa)};
+  } else {
+    campos = {monto_usd: nuevo, monto_bs: tasa ? redondear2(nuevo * tasa) : e.monto_bs};
+  }
+  let gasto = null;
+  if(e.gasto_id){
+    const [g, otros] = await Promise.all([
+      db.from('gastos').select('id, monto, descripcion').eq('id', e.gasto_id).maybeSingle(),
+      db.from('egresos').select('id').eq('gasto_id', e.gasto_id).neq('id', e.id).limit(1)
+    ]);
+    if(g.data && !(otros.data || []).length && Math.abs(Number(g.data.monto) - Number(e.monto_usd)) < 0.01) gasto = g.data;
+  }
+  return {campos, gasto, tasa};
+}
+// devuelve null si salio bien, o el mensaje de error
+async function aplicarAjuste(e, plan, totalAntes, c){
+  const campos = Object.assign({}, plan.campos);
+  const nota = 'Monto ajustado al banco el ' + new Date().toLocaleDateString('es-VE') + ': antes ' + fmtCuenta(totalAntes, c);
+  campos.nota = e.nota ? e.nota + ' · ' + nota : nota;
+  if(plan.gasto){
+    const { error } = await db.from('gastos').update({monto: campos.monto_usd}).eq('id', plan.gasto.id);
+    if(error) return 'no se pudo ajustar el gasto: ' + error.message;
+  }
+  const { error } = await db.from('egresos').update(campos).eq('id', e.id);
+  if(error){
+    if(plan.gasto) await db.from('gastos').update({monto: plan.gasto.monto}).eq('id', plan.gasto.id);
+    return error.message;
+  }
+  return null;
+}
+
+// Despues de enlazar a mano un pago con otro monto (ej. la recarga se registro
+// sin el impuesto que cobra el banco): ofrece dejarlo con lo que dice el banco.
+async function ofrecerAjusteAlBanco(sg, montoMov, c){
+  if(sg.tipo !== 'egreso' || sg.total == null) return;
+  const e = sg.reg;
+  const enBs = c.moneda === 'VES';
+  const nuevo = redondear2(sg.ya + montoMov);
+  if(Math.abs(nuevo - sg.total) < 0.01) return;
+  const plan = await planAjuste(e, nuevo, c);
+  if(plan.motivo){ alert('Quedó enlazado. El monto no se ajusta desde aquí porque ' + plan.motivo + '.'); return; }
+  const diferencia = redondear2(nuevo - sg.total);
+  const msg = '¿Quieres ajustar el monto del pago por el del banco?\n\n' + sg.texto
+    + '\n\nRegistrado: ' + fmtCuenta(sg.total, c)
+    + '\nSegún el banco: ' + fmtCuenta(nuevo, c) + ' (' + (diferencia > 0 ? '+' : '') + fmtCuenta(diferencia, c)
+      + (diferencia > 0 ? ', por ejemplo el impuesto o la comisión' : '') + ')'
+    + (enBs ? '\nEn dólares queda ' + fmtMoney(plan.campos.monto_usd) + ' (tasa ' + plan.tasa.toFixed(4) + ')' : '')
+    + (plan.gasto ? '\n\nTambién se cambia el gasto «' + plan.gasto.descripcion + '» a ' + fmtMoney(plan.campos.monto_usd) + '.' : '')
+    + (diferencia < 0 ? '\n\nSi falta enlazar otro movimiento del banco con este pago, dale Cancelar.' : '');
+  if(!confirm(msg)) return;
+  const err = await aplicarAjuste(e, plan, sg.total, c);
+  if(err){ alert('No se pudo ajustar el pago: ' + err); return; }
+  alert('Listo: el pago quedó en ' + fmtCuenta(nuevo, c) + (plan.gasto ? ' y el gasto en ' + fmtMoney(plan.campos.monto_usd) : '') + ', igual que el banco.');
+  await refrescarCuentas();
 }
 
 // Banco tiene dos vistas: la cuenta bancaria (estados de cuenta y conciliacion) y la caja de efectivo
@@ -3664,6 +3944,7 @@ function renderBancoCuenta(body){
     + '<div class="comp-item"><span class="t">Saldo de arranque' + (c.fecha_saldo ? ' al ' + fechaCorta(c.fecha_saldo) : '') + '</span><span>' + fmtCuenta(c.saldo_inicial, c) + '</span></div>'
     + '<div class="comp-item"><span class="t">Saldo según el sistema</span><span><b>' + fmtCuenta(s.saldo, c) + '</b></span></div>'
     + '<div class="comp-item"><span class="t">Movimientos sin conciliar</span><span' + (sinConciliar.length ? ' style="color:var(--amber);"' : '') + '>' + sinConciliar.length + '</span></div>'
+    + (sinConciliar.filter(esComision).length ? '<div class="comp-item"><span class="t">De ellos, comisiones del banco (se registran solas con ⚡)</span><span>' + sinConciliar.filter(esComision).length + '</span></div>' : '')
     + '<div style="display:flex;gap:6px;margin-top:8px;">'
       + '<label class="chip" style="background:var(--accent);color:#fff;flex:1;text-align:center;cursor:pointer;">📥 Cargar estado de cuenta'
         + '<input type="file" id="bcArchivo" accept=".xls,.xlsx,.ods,.csv,.txt" multiple style="display:none;"></label>'
@@ -3722,7 +4003,7 @@ function renderBancoCuenta(body){
     const ingreso = Number(m.monto) > 0;
     const etiqueta = m.conciliado
       ? ' <span style="color:var(--green);">✓ ' + (m.pago_id ? 'cobro' : m.egreso_id ? 'pago' : escHtml(m.nota || 'revisado')) + '</span>'
-      : ' <span style="color:var(--amber);">' + (ingreso ? 'ingreso sin identificar' : 'salida sin anotar') + '</span>';
+      : ' <span style="color:var(--amber);">' + (ingreso ? 'ingreso sin identificar' : esComision(m) ? 'comisión (se registra sola con ⚡)' : 'salida sin anotar') + '</span>';
     return '<div class="comp-item" style="align-items:flex-start;">'
       + '<span class="t" style="font-size:12px;">' + fechaCorta(m.fecha) + ' · ' + escHtml(m.descripcion || '') + (m.referencia ? ' · ref. ' + escHtml(m.referencia) : '') + etiqueta + '</span>'
       + '<span style="white-space:nowrap;color:' + (ingreso ? 'var(--green)' : 'var(--red)') + ';">' + fmtCuenta(m.monto, c) + '</span></div>'
@@ -3752,14 +4033,80 @@ function renderBancoCuenta(body){
     const caja = document.getElementById('mov-' + mov.id);
     caja.innerHTML = '<div class="assumption">Buscando…</div>';
     const sugs = await sugerenciasPara(mov);
-    if(!sugs.length){
-      caja.innerHTML = '<div class="assumption">Nada en el sistema cuadra con este movimiento. '
-        + (Number(mov.monto) > 0 ? 'Si es el pago de un vecino, usa “💵 Es un cobro”.' : 'Si es un pago del condominio, regístralo en Pagos y vuelve a intentarlo.') + '</div>';
-      return;
+    const ingreso = Number(mov.monto) > 0;
+    const montoMov = Math.abs(Number(mov.monto));
+    const exactas = sugs.filter(s=>s.exacta);
+    const otras = sugs.filter(s=>!s.exacta);
+    const detalle = sg=>sg.ya > 0 && sg.falta != null
+      ? ' <span style="color:var(--amber);">(ya enlazado ' + fmtCuenta(sg.ya, c) + ', falta ' + fmtCuenta(sg.falta, c) + ')</span>' : '';
+    const filaSug = (sg, exacta)=>'<div class="comp-item" data-sug-txt="' + escHtml(sg.texto.toLowerCase()) + '"><span class="t">' + escHtml(sg.texto) + detalle(sg) + '</span>'
+      + '<button class="chip" data-cuadra="' + sg.id + '" style="background:' + (exacta ? 'var(--green);color:#fff' : 'var(--panel2)') + ';flex:0 0 auto;">'
+      + (exacta ? 'Es este' : '🔗 Enlazar') + '</button></div>';
+    caja.innerHTML = (exactas.length ? exactas.map(sg=>filaSug(sg, true)).join('')
+        : '<div class="assumption">Nada cuadra exacto con este movimiento. '
+          + (ingreso ? 'Si es el pago de un vecino que no está registrado, usa “💵 Es un cobro”.' : 'Si anotaste el gasto o la factura sin su pago, búscalo abajo en «🧾 Gastos y facturas sin pago registrado».')
+          + (otras.length ? ' Si ya lo registraste con otro monto o en un solo pago junto con otros movimientos, enlázalo abajo.' : '') + '</div>')
+      + (otras.length ? '<details style="margin:4px 0 8px;"' + (exactas.length ? '' : ' open') + '><summary style="cursor:pointer;font-size:12px;color:var(--sub);">🔗 Enlazar con otro '
+          + (ingreso ? 'cobro' : 'pago') + ' de esos días (' + otras.length + ')</summary>'
+          + '<input type="text" data-sug-filtro placeholder="Filtrar por concepto, apartamento o referencia" style="width:100%;margin:6px 0;">'
+          + otras.map(sg=>filaSug(sg, false)).join('') + '</details>' : '');
+    const filtro = caja.querySelector('[data-sug-filtro]');
+    if(filtro) filtro.oninput = ()=>{
+      const t = filtro.value.trim().toLowerCase();
+      caja.querySelectorAll('details [data-sug-txt]').forEach(el=>{ el.style.display = !t || el.dataset.sugTxt.includes(t) ? '' : 'none'; });
+    };
+    caja.querySelectorAll('[data-cuadra]').forEach(bt=>{ bt.onclick = async ()=>{
+      const sg = sugs.find(s=>s.id === bt.dataset.cuadra);
+      const campos = {[sg.tipo === 'pago' ? 'pago_id' : 'egreso_id']: sg.id};
+      if(!sg.exacta){
+        // enlace a mano con un monto que no cuadra: se avisa la diferencia y queda anotado
+        let msg = '¿Enlazar este movimiento del banco (' + fmtCuenta(montoMov, c) + ') con:\n' + sg.texto + '?';
+        if(sg.falta != null){
+          const dif = redondear2(sg.falta - montoMov);
+          msg += '\n\nRegistrado en el sistema: ' + fmtCuenta(sg.total, c)
+            + (sg.ya > 0 ? '\nYa enlazado con otros movimientos: ' + fmtCuenta(sg.ya, c) : '')
+            + '\nCon este movimiento: ' + fmtCuenta(montoMov, c)
+            + (Math.abs(dif) < 0.01 ? '\n\nQueda completo.'
+               : dif > 0 ? '\n\nFaltan ' + fmtCuenta(dif, c) + ': enlaza también el otro movimiento del banco con este mismo ' + (sg.tipo === 'pago' ? 'cobro' : 'pago') + '.'
+               : '\n\nEl banco tiene ' + fmtCuenta(-dif, c) + ' más que lo registrado (impuesto o comisión). Después te pregunto si quieres ajustar el pago al monto del banco.');
+        }
+        if(!confirm(msg)) return;
+        campos.nota = 'Enlazado a mano' + (sg.falta != null && Math.abs(sg.falta - montoMov) >= 0.01
+          ? ' (registrado ' + fmtCuenta(sg.total, c) + ', banco ' + fmtCuenta(montoMov, c) + ')' : '');
+      }
+      const ok = await conciliar(mov.id, campos);
+      if(ok) await ofrecerAjusteAlBanco(sg, montoMov, c);
+    }; });
+    // una salida puede ser el pago de un gasto o una factura que se anotó sin su pago
+    if(!ingreso){
+      const deudas = await deudasSinPagar();
+      if(deudas.length){
+        const tasaRef = c.moneda === 'VES' ? ((await tasaDelDia(mov.fecha)) || {}).tasa : 1;
+        const usdMov = tasaRef ? montoMov / tasaRef : null;
+        // primero las que se parecen en monto
+        deudas.sort((a, b)=>usdMov ? Math.abs(a.saldo - usdMov) - Math.abs(b.saldo - usdMov) : 0);
+        const det = document.createElement('details');
+        det.style.margin = '4px 0 8px';
+        det.open = !exactas.length && !otras.length;
+        det.innerHTML = '<summary style="cursor:pointer;font-size:12px;color:var(--sub);">🧾 Gastos y facturas sin pago registrado (' + deudas.length + ')</summary>'
+          + '<div class="assumption" style="margin:6px 0;">Si anotaste el gasto o la factura pero no su pago, elígelo: se registra el pago con la fecha, la referencia y el monto del banco, y queda conciliado.'
+          + (usdMov ? ' Este movimiento son unos ' + fmtMoney(usdMov) + '.' : '') + '</div>'
+          + '<input type="text" data-deuda-filtro placeholder="Filtrar por concepto o proveedor" style="width:100%;margin:0 0 6px;">'
+          + deudas.map((d, i)=>'<div class="comp-item" data-deuda-txt="' + escHtml(d.texto.toLowerCase()) + '"><span class="t">' + escHtml(d.texto)
+              + ' <span style="color:var(--amber);">(debe ' + fmtMoney(d.saldo) + ')</span></span>'
+              + '<button class="chip" data-pagar-deuda="' + i + '" style="background:' + (usdMov && Math.abs(d.saldo - usdMov) <= Math.max(1, usdMov * 0.05) ? 'var(--green);color:#fff' : 'var(--panel2)') + ';flex:0 0 auto;">💸 Es su pago</button></div>').join('');
+        caja.appendChild(det);
+        det.querySelector('[data-deuda-filtro]').oninput = e=>{
+          const t = e.target.value.trim().toLowerCase();
+          det.querySelectorAll('[data-deuda-txt]').forEach(el=>{ el.style.display = !t || el.dataset.deudaTxt.includes(t) ? '' : 'none'; });
+        };
+        det.querySelectorAll('[data-pagar-deuda]').forEach(bt=>{ bt.onclick = async ()=>{
+          bt.disabled = true;
+          const ok = await pagarDeudaConMovimiento(mov, deudas[Number(bt.dataset.pagarDeuda)], c);
+          if(!ok) bt.disabled = false;
+        }; });
+      }
     }
-    caja.innerHTML = sugs.map(sg=>'<div class="comp-item"><span class="t">' + escHtml(sg.texto) + '</span>'
-      + '<button class="chip" data-cuadra="' + sg.id + '" data-tipo="' + sg.tipo + '" style="background:var(--green);color:#fff;flex:0 0 auto;">Es este</button></div>').join('');
-    caja.querySelectorAll('[data-cuadra]').forEach(bt=>{ bt.onclick = ()=>conciliar(mov.id, {[bt.dataset.tipo === 'pago' ? 'pago_id' : 'egreso_id']: bt.dataset.cuadra}); });
   }; });
 
   lista.querySelectorAll('[data-mov-otro]').forEach(b=>{ b.onclick = async ()=>{
@@ -3803,6 +4150,12 @@ function renderBancoCuenta(body){
           await refrescarCuentas();
         }catch(err){ e.target.disabled = false; alert('No se pudo registrar: ' + err.message); }
       };
+      return;
+    }
+    if(esComision(mov)){
+      if(!confirm('Esta salida es una comisión del banco (' + fmtCuenta(Math.abs(Number(mov.monto)), c) + ').\n\nSe suma al gasto «Comisiones bancarias» del mes y queda conciliada. ¿Seguir?')) return;
+      const n = await registrarComisiones([mov]);
+      if(n) await refrescarCuentas();
       return;
     }
     const nota = prompt(Number(mov.monto) > 0
@@ -10715,6 +11068,27 @@ function renderConfigTab(body){
     + '<div class="savebar"><button class="btn primary" id="btnGuardarEC" style="flex:1;">Guardar</button></div>'
     + '<div class="savedFlag" id="flagEC"></div></div>';
   body.appendChild(ecDet);
+
+  // textos del banco que son comision (Banco › ⚡ Conciliar lo seguro las registra solas)
+  const comDet = document.createElement('details');
+  comDet.style.marginBottom = '12px';
+  comDet.innerHTML = '<summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--sub);padding:4px 0;">🏦 Banco: comisiones</summary>'
+    + '<div style="margin-top:10px;">'
+    + '<div class="form-row"><label>Textos que el banco usa para las comisiones (uno por línea)</label>'
+    + '<textarea id="cfgPatronesCom" style="width:100%;min-height:70px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px;font-size:12px;">' + esc(patronesComision.join('\n')) + '</textarea></div>'
+    + '<div class="assumption" style="margin-top:-2px;">Una salida del banco cuyo texto contenga alguno de estos se registra sola como gasto «Comisiones bancarias» del mes (una sola línea que va sumando) y queda conciliada. No importan mayúsculas ni tildes: «comision x cred» sirve para «Comisión X Cred».</div>'
+    + '<div class="savebar"><button class="btn primary" id="btnGuardarCom" style="flex:1;">Guardar</button></div>'
+    + '<div class="savedFlag" id="flagCom"></div></div>';
+  body.appendChild(comDet);
+  cargarPatronesComision().then(()=>{ comDet.querySelector('#cfgPatronesCom').value = patronesComision.join('\n'); }).catch(()=>{});
+  comDet.querySelector('#btnGuardarCom').onclick = async ()=>{
+    const lista = comDet.querySelector('#cfgPatronesCom').value.split(/\n|,/).map(x=>x.trim()).filter(Boolean);
+    try{
+      await guardarConfig('patrones_comision', lista.join('\n'));
+      patronesComision = lista;
+      const f = comDet.querySelector('#flagCom'); f.textContent = '✓ Guardado'; setTimeout(()=>{ f.textContent = ''; }, 2500);
+    }catch(err){ alert('No se pudo guardar: ' + (err.message || err)); }
+  };
   ecDet.querySelector('#btnGuardarEC').onclick = async ()=>{
     const pct = parseFloat(ecDet.querySelector('#cfgCobranzaPct').value);
     const dias = parseInt(ecDet.querySelector('#cfgDiasCredito').value, 10);
