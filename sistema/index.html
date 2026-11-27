@@ -4007,7 +4007,9 @@ function renderBancoCuenta(body){
     return '<div class="comp-item" style="align-items:flex-start;">'
       + '<span class="t" style="font-size:12px;">' + fechaCorta(m.fecha) + ' · ' + escHtml(m.descripcion || '') + (m.referencia ? ' · ref. ' + escHtml(m.referencia) : '') + etiqueta + '</span>'
       + '<span style="white-space:nowrap;color:' + (ingreso ? 'var(--green)' : 'var(--red)') + ';">' + fmtCuenta(m.monto, c) + '</span></div>'
-      + (m.conciliado ? '' : '<div style="display:flex;gap:4px;flex-wrap:wrap;margin:-2px 0 6px 10px;">'
+      + (m.conciliado ? (puedeDinero() && !String(m.referencia || '').startsWith('CAJA-')
+          ? '<div style="margin:-2px 0 6px 10px;"><button class="chip" data-mov-soltar="' + m.id + '" style="background:var(--panel2);" title="Soltarlo de lo que tiene enlazado para enlazarlo bien">↩️ Desenlazar</button></div>' : '')
+        : '<div style="display:flex;gap:4px;flex-wrap:wrap;margin:-2px 0 6px 10px;">'
           + '<button class="chip" data-mov-buscar="' + m.id + '" style="background:var(--panel2);">🔎 Buscar</button>'
           + (ingreso ? '<button class="chip" data-mov-cobro="' + m.id + '" style="background:var(--panel2);">💵 Es un cobro</button>' : '')
           + '<button class="chip" data-mov-otro="' + m.id + '" style="background:var(--panel2);">' + (ingreso ? '➕ Otro ingreso' : '🏷️ Comisión u otro') + '</button>'
@@ -4107,6 +4109,42 @@ function renderBancoCuenta(body){
         }; });
       }
     }
+  }; });
+
+  // deshacer un enlace equivocado: el movimiento vuelve a «Por conciliar» y el cobro o
+  // pago sigue registrado (sin su movimiento del banco). No borra nada.
+  lista.querySelectorAll('[data-mov-soltar]').forEach(b=>{ b.onclick = async ()=>{
+    const mov = movimientosCache.find(x=>x.id === b.dataset.movSoltar);
+    if(!mov) return;
+    let con, aviso = '';
+    if(mov.pago_id){
+      const { data: p } = await db.from('pagos').select('apartamento_id, fecha, monto, referencia').eq('id', mov.pago_id).maybeSingle();
+      con = p ? 'el cobro de ' + p.apartamento_id + ' del ' + fechaCorta(p.fecha) + ' por ' + fmtMoney(Number(p.monto)) + (p.referencia ? ' (ref. ' + p.referencia + ')' : '') : 'un cobro';
+      aviso = 'El cobro sigue registrado. Si también estaba mal, corrígelo en Cobros.';
+    } else if(mov.egreso_id){
+      const { data: e } = await db.from('egresos').select('concepto, fecha, monto_usd, nota').eq('id', mov.egreso_id).maybeSingle();
+      con = e ? 'el pago «' + e.concepto + '» del ' + fechaCorta(e.fecha) + ' por ' + fmtMoney(Number(e.monto_usd)) : 'un pago';
+      aviso = mov.nota === 'Comisión bancaria'
+        ? 'Era una comisión: su monto sigue sumado en el gasto «Comisiones bancarias» del mes. Si no era una comisión, corrige ese gasto.'
+        : 'El pago sigue registrado. Si también estaba mal (por ejemplo, se creó desde este movimiento), anúlalo en Pagos con la ✕.';
+      if(e && String(e.nota || '').includes('Monto ajustado al banco')) aviso += '\nOjo: su monto se había ajustado al del banco y se queda así.';
+    } else if(mov.otro_ingreso_id){
+      const { data: o } = await db.from('otros_ingresos').select('concepto, fecha, monto_usd').eq('id', mov.otro_ingreso_id).maybeSingle();
+      con = o ? 'el ingreso «' + o.concepto + '» del ' + fechaCorta(o.fecha) + ' por ' + fmtMoney(Number(o.monto_usd)) : 'otro ingreso';
+      aviso = 'Ese ingreso sigue registrado. Si también estaba mal, bórralo en Otros ingresos.';
+    } else {
+      con = mov.nota ? 'la nota «' + mov.nota + '»' : 'una marca de revisado';
+    }
+    if(!confirm('¿Desenlazar este movimiento del banco?\n\n' + fechaCorta(mov.fecha) + ' · ' + (mov.descripcion || '')
+        + (mov.referencia ? ' · ref. ' + mov.referencia : '') + ' · ' + fmtCuenta(mov.monto, c)
+        + '\n\nEstá enlazado con ' + con + '.\nVuelve a «Por conciliar» y lo enlazas bien con 🔎 Buscar.'
+        + (aviso ? '\n\n' + aviso : ''))) return;
+    const campos = {conciliado: false, pago_id: null, egreso_id: null, gasto_id: null, nota: null, conciliado_por: null, conciliado_en: null};
+    if('otro_ingreso_id' in mov) campos.otro_ingreso_id = null;
+    b.disabled = true;
+    const { error } = await db.from('movimientos_banco').update(campos).eq('id', mov.id);
+    if(error){ b.disabled = false; alert('No se pudo desenlazar: ' + error.message); return; }
+    await refrescarCuentas();
   }; });
 
   lista.querySelectorAll('[data-mov-otro]').forEach(b=>{ b.onclick = async ()=>{
